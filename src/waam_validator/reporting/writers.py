@@ -1,0 +1,387 @@
+"""Stable JSON/CSV/Markdown and console output."""
+
+from __future__ import annotations
+
+import csv
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+
+from ..config.models import Config
+from ..constants import LIMITATIONS_TEXT
+from ..errors import OutputWriteError, ValidationIssue, WaamValidatorError
+from ..models import ValidationResult
+
+
+def prepare_output_directory(input_dir: Path, output_dir: Path | None) -> Path:
+    """Create a non-destructive run output directory."""
+    try:
+        if output_dir is not None:
+            resolved = output_dir.expanduser().resolve()
+            if resolved.exists() and any(resolved.iterdir()):
+                raise OutputWriteError(
+                    "OUTPUT_WRITE_FAILED",
+                    f"Explicit output directory is not empty: {resolved}",
+                )
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
+        root = input_dir / "output"
+        root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        candidate = root / stamp
+        suffix = 1
+        while candidate.exists():
+            candidate = root / f"{stamp}_{suffix:03d}"
+            suffix += 1
+        candidate.mkdir()
+        return candidate.resolve()
+    except OutputWriteError:
+        raise
+    except OSError as exc:
+        raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
+
+
+def configure_file_logging(output_dir: Path) -> None:
+    """Configure the package logger to write a run-local file."""
+    logger = logging.getLogger("waam_validator")
+    logger.setLevel(logging.INFO)
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
+    handler = logging.FileHandler(output_dir / "run.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+
+
+def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+    except OSError as exc:
+        raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
+
+
+def _optional(value: float | None) -> str | float:
+    return "" if value is None else value
+
+
+def write_result_files(result: ValidationResult, config: Config) -> None:
+    """Write all configured core artifacts plus warnings and log files."""
+    output = result.output_dir
+    try:
+        if config.output.save_summary_json:
+            (output / "summary.json").write_text(
+                json.dumps(result.summary_dict(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        if config.output.save_collision_events_csv:
+            _write_csv(
+                output / "collision_events.csv",
+                [
+                    "event_id",
+                    "type",
+                    "robot_a",
+                    "robot_b",
+                    "start_s",
+                    "end_s",
+                    "duration_s",
+                    "min_tcp_distance_mm",
+                    "required_tcp_distance_mm",
+                    "crossing_x_mm",
+                    "crossing_y_mm",
+                ],
+                [
+                    {
+                        "event_id": event.event_id,
+                        "type": event.collision_type,
+                        "robot_a": event.robot_a,
+                        "robot_b": event.robot_b,
+                        "start_s": event.start_s,
+                        "end_s": event.end_s,
+                        "duration_s": event.duration_s,
+                        "min_tcp_distance_mm": _optional(event.min_tcp_distance_mm),
+                        "required_tcp_distance_mm": _optional(event.required_tcp_distance_mm),
+                        "crossing_x_mm": _optional(event.crossing_x_mm),
+                        "crossing_y_mm": _optional(event.crossing_y_mm),
+                    }
+                    for event in result.collision.events
+                ],
+            )
+        if config.output.save_robot_metrics_csv:
+            _write_csv(
+                output / "robot_metrics.csv",
+                [
+                    "robot_id",
+                    "completion_s",
+                    "deposition_time_s",
+                    "travel_time_s",
+                    "wait_time_s",
+                    "deposition_ratio",
+                    "travel_ratio",
+                    "wait_ratio",
+                    "deposition_length_mm",
+                    "travel_length_mm",
+                    "mean_deposition_speed_mm_s",
+                    "mean_travel_speed_mm_s",
+                ],
+                [
+                    {
+                        "robot_id": item.robot_id,
+                        "completion_s": item.completion_s,
+                        "deposition_time_s": item.deposition_time_s,
+                        "travel_time_s": item.travel_time_s,
+                        "wait_time_s": item.wait_time_s,
+                        "deposition_ratio": item.deposition_ratio,
+                        "travel_ratio": item.travel_ratio,
+                        "wait_ratio": item.wait_ratio,
+                        "deposition_length_mm": item.deposition_length_mm,
+                        "travel_length_mm": item.travel_length_mm,
+                        "mean_deposition_speed_mm_s": _optional(
+                            item.mean_deposition_speed_mm_s
+                        ),
+                        "mean_travel_speed_mm_s": _optional(item.mean_travel_speed_mm_s),
+                    }
+                    for item in result.schedule.robots
+                ],
+            )
+        if config.output.save_layer_metrics_csv:
+            _write_csv(
+                output / "layer_metrics.csv",
+                [
+                    "layer_index",
+                    "z_bottom_mm",
+                    "z_top_mm",
+                    "z_slice_mm",
+                    "target_area_mm2",
+                    "deposited_area_mm2",
+                    "intersection_area_mm2",
+                    "underfill_area_mm2",
+                    "overfill_area_mm2",
+                    "coverage",
+                    "underfill_ratio",
+                    "overfill_ratio",
+                    "iou",
+                    "passed",
+                ],
+                [
+                    {
+                        "layer_index": item.layer_index,
+                        "z_bottom_mm": item.z_bottom_mm,
+                        "z_top_mm": item.z_top_mm,
+                        "z_slice_mm": item.z_slice_mm,
+                        "target_area_mm2": item.target_area_mm2,
+                        "deposited_area_mm2": item.deposited_area_mm2,
+                        "intersection_area_mm2": item.intersection_area_mm2,
+                        "underfill_area_mm2": item.underfill_area_mm2,
+                        "overfill_area_mm2": item.overfill_area_mm2,
+                        "coverage": item.coverage,
+                        "underfill_ratio": item.underfill_ratio,
+                        "overfill_ratio": _optional(item.overfill_ratio),
+                        "iou": item.iou,
+                        "passed": str(item.passed).lower(),
+                    }
+                    for item in result.layer_metrics
+                ],
+            )
+        _write_warnings(output / "warnings.csv", result.warnings + result.errors)
+        if config.output.save_report_markdown:
+            (output / "validation_report.md").write_text(
+                _render_markdown(result), encoding="utf-8"
+            )
+    except OutputWriteError:
+        raise
+    except OSError as exc:
+        raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
+
+
+def _write_warnings(path: Path, issues: list[ValidationIssue]) -> None:
+    _write_csv(
+        path,
+        ["severity", "code", "message", "robot_id", "start_s", "end_s"],
+        [
+            {
+                "severity": issue.severity,
+                "code": issue.code,
+                "message": issue.message,
+                "robot_id": "" if issue.robot_id is None else issue.robot_id,
+                "start_s": _optional(issue.start_s),
+                "end_s": _optional(issue.end_s),
+            }
+            for issue in issues
+        ],
+    )
+
+
+def _render_markdown(result: ValidationResult) -> str:
+    robot_lines = "\n".join(
+        f"- R{item.robot_id}: completion {item.completion_s:.2f} s; "
+        f"D {item.deposition_time_s:.2f} s; T {item.travel_time_s:.2f} s; "
+        f"W {item.wait_time_s:.2f} s"
+        for item in result.schedule.robots
+    )
+    failures = (
+        "\n".join(
+            f"{index}. {reason}"
+            for index, reason in enumerate(result.failure_reasons, 1)
+        )
+        or "None"
+    )
+    warnings = "\n".join(f"- {item.display()}" for item in result.warnings) or "None"
+    errors = "\n".join(f"- {item.display()}" for item in result.errors) or "None"
+    output_names = {path.name for path in result.output_dir.iterdir()}
+    output_names.add("validation_report.md")
+    outputs = "\n".join(f"- `{name}`" for name in sorted(output_names))
+    return f"""# WAAM Plan Validation Report
+
+## Overall Result
+
+**{result.status}**
+
+## Input Summary
+
+- Directory: `{result.input_dir}`
+- Trajectory rows: {result.trajectory_rows}
+- Target watertight: {result.target_watertight}
+
+## Schedule
+
+- Makespan: {result.schedule.makespan_s:.2f} s
+{robot_lines}
+
+## Collision
+
+- ARM_CROSS events: {result.collision.arm_cross_event_count}
+- TCP_RADIUS events: {result.collision.tcp_radius_event_count}
+- Minimum TCP distance: {result.collision.minimum_tcp_distance_mm:.2f} mm
+
+## Shape
+
+- Coverage: {result.shape.coverage:.2%}
+- Underfill: {result.shape.underfill_ratio:.2%}
+- Overfill: {result.shape.overfill_ratio:.2%}
+- IoU: {result.shape.iou:.2%}
+- Failed layers: {result.shape.failed_layer_count} / {result.shape.evaluated_layer_count}
+
+## Failure Reasons
+
+{failures}
+
+## Warnings
+
+{warnings}
+
+## Errors
+
+{errors}
+
+## Output Files
+
+{outputs}
+
+## Interpretation Limitations
+
+{LIMITATIONS_TEXT}
+"""
+
+
+def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Path) -> None:
+    """Best-effort minimal fatal error artifact."""
+    payload = {
+        "schema_version": "1.0",
+        "status": "ERROR",
+        "code": error.code,
+        "message": error.message,
+        "input_directory": str(input_dir),
+    }
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "error.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        return
+
+
+def render_console_summary(result: ValidationResult) -> str:
+    """Render the fixed human-oriented console result block."""
+    lines = [
+        "=" * 60,
+        "WAAM PATH VALIDATION RESULT",
+        "=" * 60,
+        f"Overall Result : {result.status}",
+        "",
+        "[Schedule]",
+        f"Makespan : {result.schedule.makespan_s:.2f} s",
+    ]
+    for item in result.schedule.robots:
+        lines.append(
+            f"R{item.robot_id} : completion={item.completion_s:.2f} s | "
+            f"D={item.deposition_time_s:.2f} s | T={item.travel_time_s:.2f} s | "
+            f"W={item.wait_time_s:.2f} s"
+        )
+    pair = result.collision.minimum_tcp_pair
+    lines.extend(
+        [
+            "",
+            "[Collision]",
+            f"ARM_CROSS events : {result.collision.arm_cross_event_count}",
+            f"TCP_RADIUS events: {result.collision.tcp_radius_event_count}",
+            f"Total events     : {len(result.collision.events)}",
+            f"Minimum TCP distance : {result.collision.minimum_tcp_distance_mm:.2f} mm "
+            f"(R{pair[0]}-R{pair[1]}; required >= "
+            f"{result.collision.minimum_required_distance_mm:.2f} mm)",
+            f"Collision-free       : {'YES' if result.collision_free else 'NO'}",
+            "",
+            "[Shape]",
+            f"Target volume    : {result.shape.target_volume_mm3 / 1_000_000:.3f} L",
+            f"Deposited volume : {result.shape.deposited_volume_mm3 / 1_000_000:.3f} L",
+            f"Coverage         : {_percent(result.shape.coverage)}",
+            f"Underfill        : {_percent(result.shape.underfill_ratio)}",
+            f"Overfill         : {_percent(result.shape.overfill_ratio)}",
+            f"IoU              : {_percent(result.shape.iou)}",
+            f"Failed layers    : {result.shape.failed_layer_count} / "
+            f"{result.shape.evaluated_layer_count} "
+            f"({_percent(result.shape.failed_layer_ratio)})",
+            f"Shape-valid      : {'YES' if result.shape.passed else 'NO'}",
+            "",
+            "[Failure Reasons]",
+        ]
+    )
+    if result.failure_reasons:
+        lines.extend(
+            f"{index}. {reason}" for index, reason in enumerate(result.failure_reasons, 1)
+        )
+    else:
+        lines.append("None")
+    lines.extend(["", "[Warnings]"])
+    if result.warnings:
+        lines.append(
+            f"{len(result.warnings)} warning(s). See warnings.csv and validation_report.md."
+        )
+    else:
+        lines.append("None")
+    lines.extend(["", f"Results saved to: {result.output_dir}", "=" * 60])
+    return "\n".join(lines)
+
+
+def _percent(value: float) -> str:
+    return f"{value * 100.0:.2f} %"
+
+
+def render_error_block(error: WaamValidatorError, input_dir: Path) -> str:
+    """Render a short fatal error block for stderr."""
+    return "\n".join(
+        [
+            "=" * 60,
+            "WAAM VALIDATION ERROR",
+            "=" * 60,
+            f"Code    : {error.code}",
+            f"Message : {error.message}",
+            f"Input   : {input_dir}",
+            "=" * 60,
+        ]
+    )
