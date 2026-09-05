@@ -12,3 +12,6 @@ dist/
 .waam_cache/
 output/
 tests/.generated/
+
+# Local UI job copy (duplicates the tracked tests/motor fixture).
+/tests/01/

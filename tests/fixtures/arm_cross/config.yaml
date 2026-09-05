@@ -1,4 +1,4 @@
-schema_version: '1.0'
+schema_version: '1.1'
 simulation:
   max_time_step_s: 0.1
   max_tcp_step_mm: 5.0
@@ -11,18 +11,21 @@ robots:
   - -600.0
   - 0.0
   tcp_radius_mm: 20.0
+  reach_radius_mm: 2500.0
 - id: 2
   base_xyz_mm:
   - 1000.0
   - -600.0
   - 0.0
   tcp_radius_mm: 20.0
+  reach_radius_mm: 2500.0
 - id: 3
   base_xyz_mm:
   - 0.0
   - 1200.0
   - 0.0
   tcp_radius_mm: 20.0
+  reach_radius_mm: 2500.0
 process:
   deposition_speed_mm_s: 8.0
   travel_speed_mm_s: 150.0
@@ -30,6 +33,10 @@ process:
   bead_width_mm: 4.0
   build_plane_z_mm: 0.0
   tcp_z_reference: top
+workspace:
+  shape: circle_xy
+  center_xy_mm: [0.0, 0.0]
+  radius_mm: 500.0
 collision:
   check_arm_crossing: true
   check_tcp_radius: true

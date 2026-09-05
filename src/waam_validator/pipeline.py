@@ -14,7 +14,8 @@ from .errors import (
     ValidationMessages,
     WaamValidatorError,
 )
-from .models import ShapeMetrics, ValidationResult
+from .models import ReachMetrics, ShapeMetrics, ValidationResult
+from .progress import ProgressCallback, ValidationProgress
 from .reporting.writers import (
     configure_file_logging,
     prepare_output_directory,
@@ -32,19 +33,53 @@ from .shape.target import (
     validate_coordinate_consistency,
 )
 from .trajectory.loader import load_trajectory_csv
+from .trajectory.reach import compute_reach_metrics
 from .trajectory.validator import validate_trajectory_set
 from .visualization.plots import generate_static_plots
 from .visualization.replay import generate_replay_html
 
 LOGGER = logging.getLogger("waam_validator")
 
+_PROGRESS_RANGES = {
+    "loading_inputs": (0.00, 0.05),
+    "collision": (0.05, 0.45),
+    "deposition": (0.45, 0.60),
+    "target_slicing": (0.60, 0.85),
+    "shape_metrics": (0.85, 0.90),
+    "artifacts": (0.90, 1.00),
+    "completed": (1.00, 1.00),
+}
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    stage: str,
+    message: str,
+    stage_progress: float = 0.0,
+    completed_units: float | None = None,
+    total_units: float | None = None,
+    unit: str | None = None,
+) -> None:
+    if callback is not None:
+        start, end = _PROGRESS_RANGES[stage]
+        bounded = min(1.0, max(0.0, stage_progress))
+        callback(
+            ValidationProgress(
+                stage=stage,
+                message=message,
+                stage_progress=bounded,
+                overall_progress=start + (end - start) * bounded,
+                completed_units=completed_units,
+                total_units=total_units,
+                unit=unit,
+            )
+        )
+
 
 def _resolve_input(input_dir: Path) -> tuple[Path, Path, Path, Path]:
     resolved = input_dir.expanduser().resolve()
     if not resolved.is_dir():
-        raise InputValidationError(
-            "MISSING_CONFIG", f"Input directory does not exist: {resolved}"
-        )
+        raise InputValidationError("MISSING_CONFIG", f"Input directory does not exist: {resolved}")
     config_path = resolved / "config.yaml"
     trajectory_path = resolved / "trajectory.csv"
     target_path = resolved / "target.stl"
@@ -59,6 +94,7 @@ def _resolve_input(input_dir: Path) -> tuple[Path, Path, Path, Path]:
 
 def _build_failure_reasons(
     shape: ShapeMetrics,
+    reach: ReachMetrics,
     messages: ValidationMessages,
     arm_event_count: int,
     tcp_event_count: int,
@@ -67,8 +103,15 @@ def _build_failure_reasons(
     reasons: list[str] = []
     speed_codes = {"DEPOSITION_SPEED_VIOLATION", "TRAVEL_SPEED_VIOLATION"}
     for issue in messages.errors:
-        if issue.code not in speed_codes:
+        if issue.code not in speed_codes | {"ROBOT_REACH_VIOLATION"}:
             reasons.append(f"Input/process validation failed: {issue.code} - {issue.message}")
+    for item in reach.robots:
+        if not item.passed:
+            reasons.append(
+                f"ROBOT_REACH: R{item.robot_id} maximum TCP reach "
+                f"{item.maximum_reach_mm:.3f} mm exceeds configured "
+                f"{item.reach_radius_mm:.3f} mm."
+            )
     if arm_event_count:
         reasons.append(f"ARM_CROSS: {arm_event_count} event(s) detected.")
     if tcp_event_count:
@@ -86,8 +129,7 @@ def _build_failure_reasons(
         )
     if shape.iou < thresholds.minimum_overall_iou:
         reasons.append(
-            f"Overall IoU {shape.iou:.2%} is below minimum "
-            f"{thresholds.minimum_overall_iou:.2%}."
+            f"Overall IoU {shape.iou:.2%} is below minimum {thresholds.minimum_overall_iou:.2%}."
         )
     if shape.failed_layer_ratio > thresholds.maximum_failed_layer_ratio:
         reasons.append(
@@ -105,6 +147,8 @@ def run_validation(
     output_dir: Path | None = None,
     *,
     headless: bool = False,
+    generate_replay: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> ValidationResult:
     """Execute the complete validation pipeline and write configured artifacts."""
     resolved_input = input_dir.expanduser().resolve()
@@ -115,9 +159,8 @@ def run_validation(
     run_output = prepare_output_directory(resolved_input, output_dir)
     configure_file_logging(run_output)
     try:
-        resolved_input, config_path, trajectory_path, target_path = _resolve_input(
-            resolved_input
-        )
+        _report_progress(progress_callback, "loading_inputs", "입력 파일을 읽고 있습니다.")
+        resolved_input, config_path, trajectory_path, target_path = _resolve_input(resolved_input)
         LOGGER.info("Loading configuration")
         config = load_config(config_path)
         LOGGER.info("Loading trajectory")
@@ -132,9 +175,53 @@ def run_validation(
             len(target_mesh.faces),
             target_mesh.is_watertight,
         )
+        _report_progress(
+            progress_callback,
+            "loading_inputs",
+            "입력 파일과 좌표계를 확인했습니다.",
+            1.0,
+        )
 
         schedule = compute_schedule_metrics(trajectories)
-        collision = run_collision_analysis(trajectories, config)
+        reach = compute_reach_metrics(trajectories, config)
+        LOGGER.info(
+            "Schedule: makespan=%.3f s, workload_imbalance=%.3f s (%.3f%%)",
+            schedule.makespan_s,
+            schedule.workload_imbalance_s,
+            schedule.normalized_imbalance * 100.0,
+        )
+        for schedule_item, reach_item in zip(schedule.robots, reach.robots, strict=True):
+            LOGGER.info(
+                "R%d metrics: D=%.3f s/%.3f mm/%.6f mm/s, "
+                "T=%.3f s/%.3f mm/%.6f mm/s, W=%.3f s, "
+                "reach=%.3f/%.3f mm (%.3f%%), violations=%d",
+                schedule_item.robot_id,
+                schedule_item.deposition_time_s,
+                schedule_item.deposition_length_mm,
+                schedule_item.mean_deposition_speed_mm_s or 0.0,
+                schedule_item.travel_time_s,
+                schedule_item.travel_length_mm,
+                schedule_item.mean_travel_speed_mm_s or 0.0,
+                schedule_item.wait_time_s,
+                reach_item.maximum_reach_mm,
+                reach_item.reach_radius_mm,
+                reach_item.utilization_ratio * 100.0,
+                reach_item.violation_point_count,
+            )
+        _report_progress(progress_callback, "collision", "충돌 시뮬레이션을 실행 중입니다.")
+        collision = run_collision_analysis(
+            trajectories,
+            config,
+            progress_callback=lambda fraction, completed, total: _report_progress(
+                progress_callback,
+                "collision",
+                "충돌 시뮬레이션을 실행 중입니다.",
+                fraction,
+                completed,
+                total,
+                "simulation_s",
+            ),
+        )
         LOGGER.info(
             "Collision scan: %d samples, %d events",
             collision.sample_count,
@@ -146,14 +233,76 @@ def run_validation(
         if not config.collision.check_tcp_radius:
             messages.warning("TCP_RADIUS_CHECK_DISABLED", "TCP radius check is disabled.")
 
-        deposited_layers = build_deposited_layers(trajectories, config)
+        _report_progress(progress_callback, "deposition", "적층 Layer 형상을 생성 중입니다.")
+        deposited_layers = build_deposited_layers(
+            trajectories,
+            config,
+            progress_callback=lambda fraction, completed, total: _report_progress(
+                progress_callback,
+                "deposition",
+                "적층 Layer 형상을 생성 중입니다.",
+                fraction,
+                completed,
+                total,
+                "intervals",
+            ),
+        )
+        LOGGER.info("Built deposited geometry for %d layers", len(deposited_layers))
         layer_indices = determine_evaluation_layers(target_mesh, deposited_layers, config)
-        target_layers = slice_target_layers(target_mesh, layer_indices, config, messages)
+        if layer_indices:
+            LOGGER.info(
+                "Evaluating %d layers (indices %d to %d)",
+                len(layer_indices),
+                layer_indices[0],
+                layer_indices[-1],
+            )
+        else:
+            LOGGER.info("No layers selected for shape evaluation")
+        _report_progress(progress_callback, "target_slicing", "Target STL을 slicing 중입니다.")
+        target_layers = slice_target_layers(
+            target_mesh,
+            layer_indices,
+            config,
+            messages,
+            progress_callback=lambda fraction, completed, total: _report_progress(
+                progress_callback,
+                "target_slicing",
+                "Target STL을 slicing 중입니다.",
+                fraction,
+                completed,
+                total,
+                "layers",
+            ),
+        )
+        _report_progress(progress_callback, "shape_metrics", "Layer 형상 지표를 계산 중입니다.")
         shape, layer_metrics = compute_shape_metrics(
             deposited_layers,
             target_layers,
             config,
             target_mesh_volume_mm3=float(abs(target_mesh.volume)),
+            progress_callback=lambda fraction, completed, total: _report_progress(
+                progress_callback,
+                "shape_metrics",
+                "Layer 형상 지표를 계산 중입니다.",
+                fraction,
+                completed,
+                total,
+                "layers",
+            ),
+        )
+        LOGGER.info(
+            "Shape metrics: coverage=%.6f, underfill=%.6f, overfill=%.6f, "
+            "IoU=%.6f, failed_layers=%d/%d, layer_volume=%.3f mm3, "
+            "mesh_volume=%.3f mm3, discrepancy=%.6f",
+            shape.coverage,
+            shape.underfill_ratio,
+            shape.overfill_ratio,
+            shape.iou,
+            shape.failed_layer_count,
+            shape.evaluated_layer_count,
+            shape.target_volume_mm3,
+            shape.target_mesh_volume_mm3,
+            shape.target_volume_discrepancy_ratio,
         )
         if (
             shape.target_volume_discrepancy_ratio
@@ -167,12 +316,21 @@ def run_validation(
 
         failure_reasons = _build_failure_reasons(
             shape,
+            reach,
             messages,
             collision.arm_cross_event_count,
             collision.tcp_radius_event_count,
             config,
         )
         status = "PASS" if not failure_reasons else "FAIL"
+        LOGGER.info(
+            "Validation findings: %d failure reasons, %d errors, %d warnings",
+            len(failure_reasons),
+            len(messages.errors),
+            len(messages.warnings),
+        )
+        for reason in failure_reasons:
+            LOGGER.info("Failure reason: %s", reason)
         result = ValidationResult(
             status=status,
             input_dir=resolved_input,
@@ -180,6 +338,7 @@ def run_validation(
             trajectory_rows=trajectories.row_count,
             target_watertight=bool(target_mesh.is_watertight),
             schedule=schedule,
+            reach=reach,
             collision=collision,
             shape=shape,
             layer_metrics=layer_metrics,
@@ -192,8 +351,10 @@ def run_validation(
             },
         )
 
+        _report_progress(progress_callback, "artifacts", "보고서와 시각화를 생성 중입니다.")
         if config.output.save_deposited_stl:
             export_deposited_stl(deposited_layers, config, run_output / "deposited.stl")
+        _report_progress(progress_callback, "artifacts", "정적 시각화를 생성 중입니다.", 0.25)
         if not headless and config.output.save_static_plots:
             generate_static_plots(
                 trajectories,
@@ -205,7 +366,8 @@ def run_validation(
                 layer_metrics,
                 run_output,
             )
-        if not headless and config.output.save_interactive_html:
+        _report_progress(progress_callback, "artifacts", "결과 파일을 기록 중입니다.", 0.75)
+        if not headless and generate_replay:
             generate_replay_html(
                 trajectories,
                 target_mesh,
@@ -215,6 +377,12 @@ def run_validation(
             )
         write_result_files(result, config)
         LOGGER.info("Validation completed with status %s", status)
+        _report_progress(
+            progress_callback,
+            "completed",
+            f"Validation이 {status}로 완료됐습니다.",
+            1.0,
+        )
         return result
     except WaamValidatorError as exc:
         exc.output_dir = run_output
@@ -233,10 +401,10 @@ def check_input(input_dir: Path) -> tuple[int, bool, int]:
     _, config_path, trajectory_path, target_path = _resolve_input(input_dir)
     config = load_config(config_path)
     trajectories = load_trajectory_csv(trajectory_path, config)
-    messages = validate_trajectory_set(trajectories, config)
-    if messages.errors:
-        issue = messages.errors[0]
-        raise InputValidationError(issue.code, issue.message)
+    # Semantic violations returned as messages (reach, wait movement, and
+    # configured speed failures) are valid, runnable inputs whose full result is
+    # FAIL. Fatal interval/layer problems are raised directly by the validator.
+    validate_trajectory_set(trajectories, config)
     mesh = load_target_mesh(target_path, config)
     validate_coordinate_consistency(trajectories, mesh, config)
     return trajectories.row_count, bool(mesh.is_watertight), len(mesh.faces)

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import trimesh
 from shapely import Polygon
+from shapely.geometry import GeometryCollection
 
 from waam_validator.config.loader import load_config
 from waam_validator.errors import ValidationMessages
@@ -75,9 +76,7 @@ def test_shape_failure_modes(fixture_root: Path, fixture_name: str, metric_name:
     trajectories = load_trajectory_csv(job / "trajectory.csv", config)
     mesh = load_target_mesh(job / "target.stl", config)
     deposited = build_deposited_layers(trajectories, config)
-    target = slice_target_layers(
-        mesh, determine_evaluation_layers(mesh, deposited, config), config
-    )
+    target = slice_target_layers(mesh, determine_evaluation_layers(mesh, deposited, config), config)
     metrics, _ = compute_shape_metrics(
         deposited, target, config, target_mesh_volume_mm3=abs(float(mesh.volume))
     )
@@ -96,3 +95,34 @@ def test_target_slice_preserves_hole(fixture_root: Path) -> None:
     components = polygon_components(sliced)
     assert len(components) == 1
     assert len(components[0].interiors) == 1
+
+
+def test_deposition_only_layer_is_counted_as_failed(fixture_root: Path) -> None:
+    config = load_config(fixture_root / "collision_free" / "config.yaml")
+    target = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    excess = Polygon([(20, 0), (30, 0), (30, 10), (20, 10)])
+
+    metrics, layers = compute_shape_metrics({0: target, 1: excess}, {0: target}, config)
+
+    assert len(layers) == 2
+    assert metrics.evaluated_layer_count == 2
+    assert metrics.failed_layer_count == 1
+    assert metrics.failed_layer_ratio == pytest.approx(0.5)
+    assert layers[1].passed is False
+
+
+def test_shape_progress_reports_empty_mapped_layer(fixture_root: Path) -> None:
+    config = load_config(fixture_root / "collision_free" / "config.yaml")
+    target = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    progress: list[tuple[float, int, int]] = []
+
+    compute_shape_metrics(
+        {1: GeometryCollection()},
+        {0: target, 1: GeometryCollection()},
+        config,
+        progress_callback=lambda fraction, completed, total: progress.append(
+            (fraction, completed, total)
+        ),
+    )
+
+    assert progress[-1] == (1.0, 2, 2)

@@ -16,6 +16,7 @@ class RobotConfig(FrozenModel):
     id: Literal[1, 2, 3]
     base_xyz_mm: tuple[float, float, float]
     tcp_radius_mm: float = Field(gt=0)
+    reach_radius_mm: float = Field(gt=0)
 
 
 class SimulationConfig(FrozenModel):
@@ -32,6 +33,14 @@ class ProcessConfig(FrozenModel):
     bead_width_mm: float = Field(gt=0)
     build_plane_z_mm: float
     tcp_z_reference: Literal["top", "center"]
+
+
+class WorkspaceConfig(FrozenModel):
+    """Circular build workspace on the World XY plane."""
+
+    shape: Literal["circle_xy"]
+    center_xy_mm: tuple[float, float]
+    radius_mm: float = Field(gt=0)
 
 
 class CollisionConfig(FrozenModel):
@@ -70,15 +79,16 @@ class OutputConfig(FrozenModel):
     save_layer_metrics_csv: bool
     save_deposited_stl: bool
     save_static_plots: bool
-    save_interactive_html: bool
+    save_interactive_html: bool = False
     animation_sample_interval_s: float = Field(gt=0)
 
 
 class Config(FrozenModel):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.1"]
     simulation: SimulationConfig
     robots: tuple[RobotConfig, RobotConfig, RobotConfig]
     process: ProcessConfig
+    workspace: WorkspaceConfig
     collision: CollisionConfig
     validation: ValidationConfig
     shape_validation: ShapeValidationConfig
@@ -96,7 +106,48 @@ class Config(FrozenModel):
                 distance = math.dist(base_a, base_b)
                 if distance <= epsilon:
                     raise ValueError("robot base coordinates must be distinct")
+        triangle = [(float(base[0]), float(base[1])) for base in bases]
+        area_twice = abs(
+            (triangle[1][0] - triangle[0][0]) * (triangle[2][1] - triangle[0][1])
+            - (triangle[1][1] - triangle[0][1]) * (triangle[2][0] - triangle[0][0])
+        )
+        longest_edge = max(
+            math.dist(triangle[index], triangle[(index + 1) % 3]) for index in range(3)
+        )
+        if area_twice <= epsilon * longest_edge:
+            raise ValueError("robot base XY coordinates must form a non-degenerate triangle")
+        if not _circle_inside_triangle_xy(
+            self.workspace.center_xy_mm,
+            self.workspace.radius_mm,
+            triangle,
+            epsilon,
+        ):
+            raise ValueError("workspace circle must lie inside the robot-base XY triangle")
         return self
 
     def robot(self, robot_id: int) -> RobotConfig:
         return next(robot for robot in self.robots if robot.id == robot_id)
+
+
+def _circle_inside_triangle_xy(
+    center: tuple[float, float],
+    radius_mm: float,
+    triangle: list[tuple[float, float]],
+    epsilon: float,
+) -> bool:
+    signed_distances: list[float] = []
+    distances: list[float] = []
+    for index, left in enumerate(triangle):
+        right = triangle[(index + 1) % 3]
+        edge_x = right[0] - left[0]
+        edge_y = right[1] - left[1]
+        edge_length = math.hypot(edge_x, edge_y)
+        cross = edge_x * (center[1] - left[1]) - edge_y * (center[0] - left[0])
+        signed_distances.append(cross / edge_length)
+        distances.append(abs(cross) / edge_length)
+    has_negative = any(value < -epsilon for value in signed_distances)
+    has_positive = any(value > epsilon for value in signed_distances)
+    boundary_tolerance = max(epsilon, radius_mm * 1.0e-8)
+    return not (has_negative and has_positive) and (
+        min(distances) + boundary_tolerance >= radius_mm
+    )

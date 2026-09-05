@@ -72,6 +72,4 @@ def chunked_union(
         chunks.append(union_all(current))
     if not chunks:
         return empty_polygon()
-    return normalize_polygon(
-        union_all(chunks), snap_tolerance_mm, area_epsilon_mm2
-    )
+    return normalize_polygon(union_all(chunks), snap_tolerance_mm, area_epsilon_mm2)

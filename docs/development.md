@@ -1,0 +1,150 @@
+# 개발자 안내
+
+## 저장소 구조
+
+```text
+WAAM_Validator/
+├── src/waam_validator/
+│   ├── config/          # Pydantic schema와 YAML 로딩
+│   ├── trajectory/      # CSV 로딩, 의미 검사, 보간, adaptive sampling, Reach
+│   ├── schedule/        # 원본 interval 기반 시간·거리 통계
+│   ├── collision/       # 2D geometry, streaming 검사, event 병합
+│   ├── shape/           # D polygon, STL slicing, 형상 지표, mesh export
+│   ├── visualization/   # Matplotlib PNG와 Plotly Replay
+│   ├── reporting/       # JSON, CSV, Markdown, log와 console 출력
+│   ├── dashboard/       # 단일 작업 UI와 worker(내부 경로명은 호환상 유지)
+│   ├── cli.py           # Typer CLI
+│   ├── models.py        # typed runtime/result dataclass
+│   ├── pipeline.py      # 전체 Validation orchestration
+│   └── progress.py      # 진행 event 계약
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── performance/
+│   └── fixtures/
+├── examples/sample_job/
+├── docs/
+├── pyproject.toml
+└── requirements.lock
+```
+
+사용자 노출 명칭은 `WAAM Validator` 또는 `UI`입니다. `dashboard`는 기존 코드 이동을
+피하기 위해 남긴 내부 module path이며 공개 CLI 명령은 `waam-validator ui`입니다.
+
+## 개발 환경 설치
+
+```powershell
+cd C:\Github\WAAM_Validator
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock
+python -m pip install -e . --no-deps
+```
+
+`requirements.lock`에는 runtime과 pytest, Ruff, mypy, psutil 등 개발 도구의 해석
+버전이 함께 고정되어 있습니다. `pyproject.toml`의 직접 의존성을 바꾸면 lock도 함께
+갱신하고 `pip check`로 충돌을 확인합니다.
+
+## 품질 검사
+
+### 일반 테스트
+
+```powershell
+.\.venv\Scripts\pytest.exe -q -m "not performance"
+```
+
+`pyproject.toml`의 기본 pytest 옵션도 performance test를 제외합니다. Unit test는
+config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape, UI data/preview/runner를
+검증합니다. Integration test는 CLI와 single-job UI의 실제 연결을 확인합니다.
+
+### 정적 검사
+
+```powershell
+.\.venv\Scripts\ruff.exe check .
+.\.venv\Scripts\mypy.exe src
+.\.venv\Scripts\python.exe -m pip check
+```
+
+- Ruff target: Python 3.11, line length 100
+- mypy: `strict = true`
+- Shapely, Trimesh, Matplotlib, Plotly은 외부 typing 제약 때문에 ignore override 사용
+
+### Performance test
+
+```powershell
+.\.venv\Scripts\pytest.exe -q -m performance
+```
+
+대형 synthetic trajectory의 full pipeline 메모리와 실행 시간을 측정하므로 일반
+회귀 테스트와 분리되어 있습니다. CI/로컬 자원이 충분할 때 명시적으로 실행합니다.
+
+## 수동 smoke test
+
+```powershell
+waam-validator check .\examples\sample_job
+waam-validator run .\examples\sample_job --headless --json
+waam-validator ui .\examples\sample_job --port 8051
+```
+
+UI에서는 입력 확인 → Validation 실행 → 결과 전환 → on-demand Replay 순서를
+확인합니다. 입력·결과 화면에서 network 요청이 주기적으로 발생하지 않고, worker가
+실행 중일 때만 진행 interval이 활성화되는지도 확인합니다.
+
+## 변경 시 회귀 위험
+
+### Mode 의미
+
+Mode는 현재 행부터 다음 행까지 적용됩니다. 거리와 시간 계산, Gantt, deposition
+polygon이 모두 같은 left-row 규칙을 사용해야 합니다. 마지막 행은 `W` 종료 상태로
+거리나 지속시간을 만들지 않습니다.
+
+### 정확 통계와 sample 통계 분리
+
+Schedule과 D/T 거리·평균 속도는 원본 interval에서 계산해야 합니다. Adaptive
+timeline은 충돌 검사용이며, 설정 해상도 변화가 schedule 통계를 바꾸면 안 됩니다.
+
+### UI downsampling 격리
+
+Target face와 trajectory point 제한은 preview payload에만 적용합니다. Input
+inspection의 통계와 worker Validation에는 항상 원본 객체를 사용해야 합니다.
+
+### PASS/FAIL과 ERROR 분리
+
+계산 가능한 위반은 결과 파일을 쓴 뒤 FAIL로 반환해야 합니다. 구조·파싱·좌표,
+Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새로운 판정 항목을
+추가할 때 CLI, summary schema, CSV, 보고서, UI, Failure Reasons와 테스트를 함께
+갱신합니다.
+
+### 결정론
+
+- 로봇과 pair는 고정 순서로 처리합니다.
+- layer index는 정렬합니다.
+- collision event는 시작 시간, 종류, pair 순으로 정렬합니다.
+- 반복 실행 간 JSON/CSV의 field·row 순서를 유지합니다.
+- 기하 fallback/downsampling은 같은 입력에 같은 선택을 해야 합니다.
+
+### 비파괴 출력
+
+기본 run은 항상 새 timestamp 폴더를 만들고 explicit non-empty output은 거부합니다.
+테스트 cleanup에서도 저장소나 사용자 입력 폴더 전체를 대상으로 한 재귀 삭제를
+사용하지 마십시오.
+
+## 코드 변경 점검표
+
+- [ ] 공개 schema/API 변경에 맞게 package version을 조정했다.
+- [ ] `README.md`와 관련 `docs/` 문서를 갱신했다.
+- [ ] synthetic unit test와 필요한 integration regression을 추가했다.
+- [ ] PASS/FAIL, error code와 Failure Reasons 순서를 확인했다.
+- [ ] UI preview가 대형 입력에서도 bounded payload를 유지한다.
+- [ ] `pytest`, Ruff, strict mypy, `pip check`가 통과한다.
+- [ ] 의존성 변경 시 `requirements.lock`을 갱신했다.
+
+## 관련 문서
+
+- [검증 방법과 판정 기준](validation-method.md)
+- [Python API](python-api.md)
+- [결과 및 산출물 참조](results-reference.md)
+- [입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md)
+
+[문서 안내로 돌아가기](README.md)

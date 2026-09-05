@@ -60,8 +60,7 @@ def test_100k_rows_under_512_mb(fixture_root: Path, tmp_path: Path) -> None:
     stdout, stderr = process.communicate()
     elapsed_s = time.perf_counter() - started
     print(
-        f"PERFORMANCE rows=100000 peak_rss_mib={peak_rss / (1024**2):.2f} "
-        f"elapsed_s={elapsed_s:.2f}"
+        f"PERFORMANCE rows=100000 peak_rss_mib={peak_rss / (1024**2):.2f} elapsed_s={elapsed_s:.2f}"
     )
     assert process.returncode == 1, stderr
     assert '"status":"FAIL"' in stdout

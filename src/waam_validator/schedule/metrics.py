@@ -15,9 +15,7 @@ def compute_schedule_metrics(trajectories: TrajectorySet) -> ScheduleMetrics:
     robot_metrics: list[RobotMetrics] = []
     for trajectory in trajectories.robots:
         durations = np.diff(trajectory.time_s)
-        distances = np.linalg.norm(
-            np.diff(trajectory.xyz_mm.astype(np.float64), axis=0), axis=1
-        )
+        distances = np.linalg.norm(np.diff(trajectory.xyz_mm.astype(np.float64), axis=0), axis=1)
         interval_modes = trajectory.mode[:-1]
         completion = float(trajectory.time_s[-1])
 
@@ -48,9 +46,7 @@ def compute_schedule_metrics(trajectories: TrajectorySet) -> ScheduleMetrics:
                 mean_deposition_speed_mm_s=(
                     deposition_length / deposition_time if deposition_time > 0 else None
                 ),
-                mean_travel_speed_mm_s=(
-                    travel_length / travel_time if travel_time > 0 else None
-                ),
+                mean_travel_speed_mm_s=(travel_length / travel_time if travel_time > 0 else None),
             )
         )
     completions = [item.completion_s for item in robot_metrics]

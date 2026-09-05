@@ -11,6 +11,7 @@ from ..config.models import Config
 from ..constants import MODE_D
 from ..errors import ComputationError
 from ..models import TrajectorySet
+from ..progress import StageProgressCallback
 from .layer_index import determine_layer_index
 from .polygon_utils import normalize_polygon
 
@@ -18,15 +19,27 @@ from .polygon_utils import normalize_polygon
 def build_deposited_layers(
     trajectories: TrajectorySet,
     config: Config,
+    *,
+    progress_callback: StageProgressCallback | None = None,
 ) -> dict[int, BaseGeometry]:
     """Convert D intervals to layer-wise buffered and unioned polygons."""
     pending: dict[int, list[BaseGeometry]] = defaultdict(list)
     partial_unions: dict[int, list[BaseGeometry]] = defaultdict(list)
     radius = config.process.bead_width_mm / 2.0
     chunk_size = max(1000, min(config.simulation.batch_size, 10_000))
+    total_intervals = sum(len(item.time_s) - 1 for item in trajectories.robots)
+    processed_intervals = 0
+    last_reported = -1.0
     try:
         for trajectory in trajectories.robots:
             for index, mode_value in enumerate(trajectory.mode[:-1]):
+                processed_intervals += 1
+                fraction = processed_intervals / total_intervals
+                if progress_callback is not None and (
+                    fraction >= 1.0 or fraction - last_reported >= 0.01
+                ):
+                    progress_callback(fraction, processed_intervals, total_intervals)
+                    last_reported = fraction
                 if int(mode_value) != int(MODE_D):
                     continue
                 start = trajectory.xyz_mm[index].astype(float)

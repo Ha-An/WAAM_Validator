@@ -14,14 +14,10 @@ def determine_layer_index(representative_z_mm: float, config: Config) -> int:
         expected_z = process.build_plane_z_mm + (layer_index + 1) * process.layer_height_mm
     else:
         raw_index = (
-            representative_z_mm
-            - process.build_plane_z_mm
-            - process.layer_height_mm / 2.0
+            representative_z_mm - process.build_plane_z_mm - process.layer_height_mm / 2.0
         ) / process.layer_height_mm
         layer_index = round(raw_index)
-        expected_z = process.build_plane_z_mm + (
-            layer_index + 0.5
-        ) * process.layer_height_mm
+        expected_z = process.build_plane_z_mm + (layer_index + 0.5) * process.layer_height_mm
     if layer_index < 0:
         raise ValueError(f"Deposition Z {representative_z_mm:.6g} mm maps below layer 0.")
     deviation = abs(representative_z_mm - expected_z)

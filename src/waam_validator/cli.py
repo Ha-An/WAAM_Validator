@@ -8,6 +8,8 @@ from typing import Annotated
 
 import typer
 
+from .dashboard.data import DashboardDataError
+from .dashboard.single_app import run_validator_ui
 from .errors import ComputationError, WaamValidatorError
 from .pipeline import check_input, run_validation
 from .reporting.writers import render_console_summary, render_error_block
@@ -34,6 +36,10 @@ def run(
         bool,
         typer.Option("--headless", help="Skip PNG and HTML visualization."),
     ] = False,
+    replay: Annotated[
+        bool,
+        typer.Option("--replay", help="Also generate the optional replay.html artifact."),
+    ] = False,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print exactly one summary JSON object to stdout."),
@@ -41,7 +47,7 @@ def run(
 ) -> None:
     """Run the complete validation pipeline."""
     try:
-        result = run_validation(job_dir, output, headless=headless)
+        result = run_validation(job_dir, output, headless=headless, generate_replay=replay)
     except WaamValidatorError as exc:
         typer.echo(render_error_block(exc, job_dir.expanduser().resolve()), err=True)
         raise typer.Exit(exc.exit_code) from None
@@ -75,6 +81,41 @@ def check(
     typer.echo("config.yaml    : OK")
     typer.echo(f"trajectory.csv : OK (3 robots, {row_count} rows)")
     typer.echo("target.stl     : OK")
+
+
+@app.command()
+def ui(
+    job_dir: Annotated[
+        Path,
+        typer.Argument(help="Directory containing config.yaml, trajectory.csv, and target.stl."),
+    ],
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Local interface to bind."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Local WAAM Validator UI port."),
+    ] = 8050,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="Do not open the default browser."),
+    ] = False,
+) -> None:
+    """Open the single-job WAAM Validator interface."""
+    try:
+        run_validator_ui(
+            job_dir,
+            host=host,
+            port=port,
+            open_browser=not no_browser,
+        )
+    except DashboardDataError as exc:
+        typer.echo(f"WAAM UI ERROR: {exc}", err=True)
+        raise typer.Exit(2) from None
+    except OSError as exc:
+        typer.echo(f"WAAM UI ERROR: {exc}", err=True)
+        raise typer.Exit(4) from None
 
 
 if __name__ == "__main__":

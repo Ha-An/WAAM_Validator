@@ -9,6 +9,7 @@ from ..constants import EXTREME_COORDINATE_WARNING_MM, MODE_D, MODE_T, MODE_W
 from ..errors import InputValidationError, ValidationMessages
 from ..models import TrajectorySet
 from ..shape.layer_index import determine_layer_index
+from .reach import compute_reach_metrics
 
 
 def validate_trajectory_set(
@@ -20,6 +21,19 @@ def validate_trajectory_set(
     geometry_epsilon = config.collision.geometry_epsilon_mm
     process = config.process
     validation = config.validation
+
+    reach = compute_reach_metrics(trajectories, config)
+    for item in reach.robots:
+        if not item.passed:
+            messages.error(
+                "ROBOT_REACH_VIOLATION",
+                f"Robot {item.robot_id} maximum TCP reach {item.maximum_reach_mm:.6g} mm "
+                f"exceeds configured radius {item.reach_radius_mm:.6g} mm at "
+                f"{item.violation_point_count} point(s).",
+                robot_id=item.robot_id,
+                start_s=item.first_violation_s,
+                end_s=item.last_violation_s,
+            )
 
     for trajectory in trajectories.robots:
         deltas = np.diff(trajectory.xyz_mm.astype(np.float64), axis=0)
@@ -55,6 +69,21 @@ def validate_trajectory_set(
 
             speed = float(lengths[index] / durations[index])
             if mode == int(MODE_D):
+                workspace_center = np.asarray(config.workspace.center_xy_mm, dtype=np.float64)
+                endpoint_radius = np.linalg.norm(
+                    trajectory.xyz_mm[index : index + 2, :2].astype(np.float64) - workspace_center,
+                    axis=1,
+                )
+                deposited_outer_radius = float(endpoint_radius.max()) + (
+                    process.bead_width_mm / 2.0
+                )
+                if deposited_outer_radius > config.workspace.radius_mm + geometry_epsilon:
+                    raise InputValidationError(
+                        "DEPOSITION_OUTSIDE_WORKSPACE",
+                        f"Robot {trajectory.robot_id} D interval at {start_s:.6g} s "
+                        f"extends to radius {deposited_outer_radius:.6g} mm outside "
+                        f"the {config.workspace.radius_mm:.6g} mm workspace.",
+                    )
                 if xy_lengths[index] <= geometry_epsilon:
                     raise InputValidationError(
                         "DEPOSITION_ZERO_LENGTH",
@@ -99,9 +128,7 @@ def validate_trajectory_set(
                         f"{start_s:.6g} s.",
                         **context,
                     )
-                maximum = process.travel_speed_mm_s * (
-                    1.0 + validation.speed_relative_tolerance
-                )
+                maximum = process.travel_speed_mm_s * (1.0 + validation.speed_relative_tolerance)
                 if speed > maximum:
                     _speed_issue(
                         messages,

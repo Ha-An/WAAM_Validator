@@ -9,7 +9,9 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 from matplotlib.axes import Axes  # noqa: E402
+from matplotlib.collections import LineCollection  # noqa: E402
 from shapely import difference, intersection, union_all  # noqa: E402
 from shapely.geometry.base import BaseGeometry  # noqa: E402
 
@@ -89,12 +91,25 @@ def _overview(
         _draw_geometry(axes, target, edgecolor="black", alpha=0.6, label="Target outline")
     for trajectory in trajectories.robots:
         color = _ROBOT_COLORS[trajectory.robot_id]
-        for index, mode in enumerate(trajectory.mode[:-1]):
-            if int(mode) not in (int(MODE_D), int(MODE_T)):
+        for mode, style, label in (
+            (MODE_D, "solid", f"R{trajectory.robot_id} D"),
+            (MODE_T, "dashed", f"R{trajectory.robot_id} T"),
+        ):
+            mask = trajectory.mode[:-1] == mode
+            if not bool(np.any(mask)):
                 continue
-            style = "-" if int(mode) == int(MODE_D) else "--"
-            points = trajectory.xyz_mm[index : index + 2]
-            axes.plot(points[:, 0], points[:, 1], style, color=color, linewidth=1.3)
+            starts = trajectory.xyz_mm[:-1, :2][mask]
+            ends = trajectory.xyz_mm[1:, :2][mask]
+            segments = np.stack((starts, ends), axis=1)
+            axes.add_collection(
+                LineCollection(
+                    segments,  # type: ignore[arg-type]
+                    colors=color,
+                    linewidths=1.0,
+                    linestyles=style,
+                    label=label,
+                )
+            )
         base = config.robot(trajectory.robot_id).base_xyz_mm
         axes.scatter(
             base[0],
@@ -129,11 +144,27 @@ def _gantt(
 ) -> None:
     figure, axes = plt.subplots(figsize=(11, 4.5), constrained_layout=True)
     for row, trajectory in enumerate(trajectories.robots):
-        for index, mode in enumerate(trajectory.mode[:-1]):
-            start = float(trajectory.time_s[index])
-            duration = float(trajectory.time_s[index + 1] - trajectory.time_s[index])
-            label = MODE_TO_TEXT[int(mode)]
-            axes.broken_barh([(start, duration)], (row - 0.35, 0.7), facecolors=_MODE_COLORS[label])
+        intervals: dict[str, list[tuple[float, float]]] = {"T": [], "D": [], "W": []}
+        interval_modes = trajectory.mode[:-1]
+        start_index = 0
+        for end_index in range(1, len(interval_modes) + 1):
+            if (
+                end_index < len(interval_modes)
+                and interval_modes[end_index] == interval_modes[start_index]
+            ):
+                continue
+            label = MODE_TO_TEXT[int(interval_modes[start_index])]
+            start = float(trajectory.time_s[start_index])
+            end = float(trajectory.time_s[end_index])
+            intervals[label].append((start, end - start))
+            start_index = end_index
+        for label, spans in intervals.items():
+            if spans:
+                axes.broken_barh(
+                    spans,
+                    (row - 0.35, 0.7),
+                    facecolors=_MODE_COLORS[label],
+                )
     for event in collision.events:
         axes.axvspan(event.start_s, event.end_s, color="crimson", alpha=0.15)
     axes.set_yticks(range(3), ["Robot 1", "Robot 2", "Robot 3"])
@@ -151,10 +182,7 @@ def _shape_metrics(layer_metrics: list[LayerMetrics], output_dir: Path) -> None:
     values = (
         ([item.coverage for item in layer_metrics], "Coverage"),
         (
-            [
-                0.0 if item.overfill_ratio is None else item.overfill_ratio
-                for item in layer_metrics
-            ],
+            [0.0 if item.overfill_ratio is None else item.overfill_ratio for item in layer_metrics],
             "Overfill",
         ),
         ([item.iou for item in layer_metrics], "IoU"),

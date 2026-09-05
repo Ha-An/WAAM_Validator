@@ -36,9 +36,7 @@ class ValidationMessages:
         )
 
     def error(self, code: str, message: str, **context: Any) -> None:
-        self.errors.append(
-            ValidationIssue(code=code, message=message, severity="error", **context)
-        )
+        self.errors.append(ValidationIssue(code=code, message=message, severity="error", **context))
 
     def extend(self, other: ValidationMessages) -> None:
         self.warnings.extend(other.warnings)

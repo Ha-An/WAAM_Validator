@@ -9,6 +9,7 @@ from shapely.geometry.base import BaseGeometry
 from ..config.models import Config
 from ..errors import ComputationError, TargetValidationError
 from ..models import LayerMetrics, ShapeMetrics
+from ..progress import StageProgressCallback
 from .layer_index import layer_bounds
 from .polygon_utils import empty_polygon, normalize_polygon
 
@@ -19,6 +20,7 @@ def compute_shape_metrics(
     config: Config,
     *,
     target_mesh_volume_mm3: float | None = None,
+    progress_callback: StageProgressCallback | None = None,
 ) -> tuple[ShapeMetrics, list[LayerMetrics]]:
     """Compute layer-wise and global nominal geometry metrics."""
     epsilon = config.shape_validation.area_epsilon_mm2
@@ -28,7 +30,9 @@ def compute_shape_metrics(
     failed_layers = 0
     evaluated_layers = 0
     try:
-        for layer_index in sorted(set(deposited_layers) | set(target_layers)):
+        ordered_layers = sorted(set(deposited_layers) | set(target_layers))
+        total_layers = len(ordered_layers)
+        for completed, layer_index in enumerate(ordered_layers, start=1):
             target = normalize_polygon(
                 target_layers.get(layer_index, empty_polygon()),
                 config.shape_validation.polygon_snap_tolerance_mm,
@@ -42,6 +46,8 @@ def compute_shape_metrics(
             target_area = float(target.area)
             deposited_area = float(deposited.area)
             if target_area <= epsilon and deposited_area <= epsilon:
+                if progress_callback is not None:
+                    progress_callback(completed / total_layers, completed, total_layers)
                 continue
             intersection_area = float(target.intersection(deposited).area)
             underfill_area = float(target.difference(deposited).area)
@@ -59,16 +65,14 @@ def compute_shape_metrics(
                 overfill_ratio = 0.0
                 iou = 0.0
                 passed = False
-                evaluated_layers += 1
-                failed_layers += 1
             else:
                 coverage = intersection_area / target_area
                 underfill_ratio = underfill_area / target_area
                 overfill_ratio = overfill_area / target_area
                 iou = intersection_area / union_area if union_area > epsilon else 1.0
                 passed = iou >= config.shape_validation.minimum_layer_iou
-                evaluated_layers += 1
-                failed_layers += int(not passed)
+            evaluated_layers += 1
+            failed_layers += int(not passed)
             bottom, top, z_slice = layer_bounds(layer_index, config)
             layer_metrics.append(
                 LayerMetrics(
@@ -93,6 +97,8 @@ def compute_shape_metrics(
             totals["intersection"] += intersection_area * height
             totals["under"] += underfill_area * height
             totals["over"] += overfill_area * height
+            if progress_callback is not None:
+                progress_callback(completed / total_layers, completed, total_layers)
     except Exception as exc:
         raise ComputationError("POLYGON_OPERATION_FAILED", str(exc)) from exc
 
@@ -107,9 +113,7 @@ def compute_shape_metrics(
     iou = totals["intersection"] / union_volume if union_volume > 0 else 1.0
     failed_ratio = failed_layers / evaluated_layers if evaluated_layers else 0.0
     mesh_volume = (
-        totals["target"]
-        if target_mesh_volume_mm3 is None
-        else abs(target_mesh_volume_mm3)
+        totals["target"] if target_mesh_volume_mm3 is None else abs(target_mesh_volume_mm3)
     )
     discrepancy = abs(mesh_volume - totals["target"]) / max(mesh_volume, epsilon * height)
     passed = (

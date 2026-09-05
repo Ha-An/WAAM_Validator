@@ -22,7 +22,7 @@ CSV_HEADER = ("robot_id", "time_s", "x_mm", "y_mm", "z_mm", "mode")
 
 def config(*, visuals: bool = False) -> dict[str, object]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "simulation": {
             "max_time_step_s": 0.1,
             "max_tcp_step_mm": 5.0,
@@ -30,7 +30,12 @@ def config(*, visuals: bool = False) -> dict[str, object]:
             "batch_size": 10000,
         },
         "robots": [
-            {"id": robot_id, "base_xyz_mm": list(base), "tcp_radius_mm": 20.0}
+            {
+                "id": robot_id,
+                "base_xyz_mm": list(base),
+                "tcp_radius_mm": 20.0,
+                "reach_radius_mm": 2500.0,
+            }
             for robot_id, base in BASES.items()
         ],
         "process": {
@@ -40,6 +45,11 @@ def config(*, visuals: bool = False) -> dict[str, object]:
             "bead_width_mm": 4.0,
             "build_plane_z_mm": 0.0,
             "tcp_z_reference": "top",
+        },
+        "workspace": {
+            "shape": "circle_xy",
+            "center_xy_mm": [0.0, 0.0],
+            "radius_mm": 500.0,
         },
         "collision": {
             "check_arm_crossing": True,

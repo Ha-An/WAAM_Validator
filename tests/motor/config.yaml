@@ -1,7 +1,7 @@
 # Derived from Multi_robot_DED_NCO/runs/motor_inner_waam_trajectory_20260825/source_config.yaml.
 # NCO R0/R1/R2 map to Validator robot IDs 1/2/3.
 # mock_arm_radius_mm is used as the closest conservative tcp_radius_mm mapping.
-schema_version: "1.0"
+schema_version: "1.1"
 simulation:
   max_time_step_s: 0.1
   max_tcp_step_mm: 5.0
@@ -11,12 +11,15 @@ robots:
   - id: 1
     base_xyz_mm: [-1000.0, 0.0, 0.0]
     tcp_radius_mm: 75.0
+    reach_radius_mm: 2000.0
   - id: 2
     base_xyz_mm: [500.0, -866.0254, 0.0]
     tcp_radius_mm: 75.0
+    reach_radius_mm: 2000.0
   - id: 3
     base_xyz_mm: [500.0, 866.0254, 0.0]
     tcp_radius_mm: 75.0
+    reach_radius_mm: 2000.0
 process:
   deposition_speed_mm_s: 10.0
   travel_speed_mm_s: 150.0
@@ -25,6 +28,10 @@ process:
   build_plane_z_mm: 0.0
   # The exported D planes are 4, 6, 8, ... mm.
   tcp_z_reference: top
+workspace:
+  shape: circle_xy
+  center_xy_mm: [0.0, 0.0]
+  radius_mm: 500.0
 collision:
   check_arm_crossing: true
   check_tcp_radius: true
@@ -57,5 +64,5 @@ output:
   save_layer_metrics_csv: true
   save_deposited_stl: true
   save_static_plots: true
-  save_interactive_html: true
+  save_interactive_html: false
   animation_sample_interval_s: 1.0

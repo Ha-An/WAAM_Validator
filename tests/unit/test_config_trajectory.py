@@ -26,6 +26,55 @@ def test_config_and_trajectory_compact_types(fixture_root: Path) -> None:
     assert trajectories.robots[0].mode.dtype == np.uint8
 
 
+def test_circular_workspace_is_loaded_and_must_lie_inside_robot_triangle(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    source = fixture_root / "collision_free" / "config.yaml"
+    data = yaml.safe_load(source.read_text(encoding="utf-8"))
+    data["workspace"] = {
+        "shape": "circle_xy",
+        "center_xy_mm": [0.0, 0.0],
+        "radius_mm": 250.0,
+    }
+    valid_path = tmp_path / "workspace-valid.yaml"
+    valid_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    config = load_config(valid_path)
+    assert config.workspace is not None
+    assert config.workspace.center_xy_mm == (0.0, 0.0)
+    assert config.workspace.radius_mm == 250.0
+
+    data["workspace"]["radius_mm"] = 3000.0
+    invalid_path = tmp_path / "workspace-invalid.yaml"
+    invalid_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    with pytest.raises(InputValidationError, match="inside the robot-base XY triangle"):
+        load_config(invalid_path)
+
+
+def test_deposition_bead_must_stay_inside_circular_workspace(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    job = fixture_root / "collision_free"
+    data = yaml.safe_load((job / "config.yaml").read_text(encoding="utf-8"))
+    data["workspace"] = {
+        "shape": "circle_xy",
+        "center_xy_mm": [0.0, 0.0],
+        "radius_mm": 250.0,
+    }
+    config_path = tmp_path / "workspace.yaml"
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    config = load_config(config_path)
+
+    csv_text = (job / "trajectory.csv").read_text(encoding="utf-8")
+    csv_text = csv_text.replace("-40.0,0.0,2.0,D", "-249.0,0.0,2.0,D")
+    trajectory_path = tmp_path / "trajectory.csv"
+    trajectory_path.write_text(csv_text, encoding="utf-8")
+    trajectories = load_trajectory_csv(trajectory_path, config)
+
+    with pytest.raises(InputValidationError) as caught:
+        validate_trajectory_set(trajectories, config)
+    assert caught.value.code == "DEPOSITION_OUTSIDE_WORKSPACE"
+
+
 def test_invalid_extra_csv_column_fails(fixture_root: Path, tmp_path: Path) -> None:
     config = load_config(fixture_root / "collision_free" / "config.yaml")
     path = tmp_path / "trajectory.csv"

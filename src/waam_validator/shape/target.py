@@ -16,6 +16,7 @@ from ..config.models import Config
 from ..constants import EXTREME_COORDINATE_WARNING_MM, MODE_D
 from ..errors import TargetValidationError, ValidationMessages
 from ..models import TrajectorySet
+from ..progress import StageProgressCallback
 from .polygon_utils import empty_polygon, normalize_polygon
 
 
@@ -83,9 +84,7 @@ def load_target_mesh(
             "target.stl extends below the configured build plane.",
         )
     if np.max(np.abs(bounds)) > EXTREME_COORDINATE_WARNING_MM and messages is not None:
-        messages.warning(
-            "EXTREME_COORDINATE_WARNING", "target.stl has extreme coordinate bounds."
-        )
+        messages.warning("EXTREME_COORDINATE_WARNING", "target.stl has extreme coordinate bounds.")
     return mesh
 
 
@@ -185,15 +184,19 @@ def slice_target_layers(
     layer_indices: Collection[int],
     config: Config,
     messages: ValidationMessages | None = None,
+    *,
+    progress_callback: StageProgressCallback | None = None,
 ) -> dict[int, BaseGeometry]:
     """Slice target STL at each requested layer mid-plane with deterministic fallback."""
     result: dict[int, BaseGeometry] = {}
     epsilon_z = min(1e-4, config.process.layer_height_mm * 1e-6)
     bounds = mesh.bounds
-    for layer_index in sorted(layer_indices):
-        z_slice = config.process.build_plane_z_mm + (
-            layer_index + 0.5
-        ) * config.process.layer_height_mm
+    ordered_layers = sorted(layer_indices)
+    total_layers = len(ordered_layers)
+    for completed, layer_index in enumerate(ordered_layers, start=1):
+        z_slice = (
+            config.process.build_plane_z_mm + (layer_index + 0.5) * config.process.layer_height_mm
+        )
         exact_error: Exception | None = None
         try:
             geometry = _slice_once(mesh, z_slice, config)
@@ -219,6 +222,8 @@ def slice_target_layers(
                 f"Layer {layer_index} used slice offset {used_offset:+.6g} mm.",
             )
         result[layer_index] = geometry
+        if progress_callback is not None:
+            progress_callback(completed / total_layers, completed, total_layers)
     return result
 
 

@@ -7,6 +7,7 @@ import pytest
 
 from waam_validator.collision.geometry2d import (
     check_arm_crossing_xy,
+    check_arm_crossing_xy_batch,
     check_tcp_radius_xy,
 )
 from waam_validator.collision.simulator import (
@@ -50,6 +51,51 @@ def test_endpoint_touch_can_be_disabled() -> None:
     assert not result.intersects
 
 
+def test_linear_geometry_epsilon_scales_for_long_segments() -> None:
+    within = check_arm_crossing_xy(
+        np.array([0.0, 0.0]),
+        np.array([1_000_000.0, 0.0]),
+        np.array([500_000.0, 0.0005]),
+        np.array([1_500_000.0, 0.0005]),
+        0.001,
+        True,
+    )
+    outside = check_arm_crossing_xy(
+        np.array([0.0, 0.0]),
+        np.array([1_000_000.0, 0.0]),
+        np.array([500_000.0, 0.002]),
+        np.array([1_500_000.0, 0.002]),
+        0.001,
+        True,
+    )
+
+    assert within.intersects
+    assert not outside.intersects
+
+
+def test_diagonal_collinear_gap_uses_euclidean_epsilon() -> None:
+    direction = np.array([1.0, 1.0]) / np.sqrt(2.0)
+    touching = check_arm_crossing_xy(
+        np.array([0.0, 0.0]),
+        direction * 10.0,
+        direction * 10.0005,
+        direction * 20.0,
+        0.001,
+        True,
+    )
+    separated = check_arm_crossing_xy(
+        np.array([0.0, 0.0]),
+        direction * 10.0,
+        direction * 10.002,
+        direction * 20.0,
+        0.001,
+        True,
+    )
+
+    assert touching.intersects
+    assert not separated.intersects
+
+
 def test_proper_intersection_location() -> None:
     result = check_arm_crossing_xy(
         np.array([0.0, 0.0]),
@@ -60,6 +106,23 @@ def test_proper_intersection_location() -> None:
         True,
     )
     assert (result.x_mm, result.y_mm) == pytest.approx((5.0, 5.0))
+
+
+def test_batch_arm_crossing_matches_scalar_results() -> None:
+    base_a = np.array([0.0, 0.0])
+    base_b = np.array([10.0, 0.0])
+    tcp_a = np.array([[10.0, 10.0], [5.0, 0.0], [0.0, 0.0], [2.0, 2.0], [4.0, 5.0]])
+    tcp_b = np.array([[0.0, 10.0], [15.0, 0.0], [10.0, 0.0], [8.0, 2.0], [7.0, 8.0]])
+
+    collisions, crossing_x, crossing_y = check_arm_crossing_xy_batch(
+        base_a, tcp_a, base_b, tcp_b, 1e-6, True
+    )
+    for index in range(len(tcp_a)):
+        scalar = check_arm_crossing_xy(base_a, tcp_a[index], base_b, tcp_b[index], 1e-6, True)
+        assert bool(collisions[index]) is scalar.intersects
+        if scalar.intersects:
+            assert crossing_x[index] == pytest.approx(scalar.x_mm)
+            assert crossing_y[index] == pytest.approx(scalar.y_mm)
 
 
 @pytest.mark.parametrize(
@@ -129,3 +192,31 @@ def test_event_accumulator_merges_only_short_false_gaps() -> None:
     assert len(arm_events) == 2
     assert arm_events[0].start_s == 0.0
     assert arm_events[0].end_s == 0.3
+
+
+def test_batch_event_accumulator_merges_gap_across_batch_boundary() -> None:
+    accumulator = CollisionEventAccumulator(merge_gap_s=0.2)
+    pair = (1, 2)
+    for times, arm_collision in (
+        (np.array([0.0, 0.1, 0.2]), np.array([True, True, False])),
+        (np.array([0.3, 0.4, 0.8]), np.array([True, False, True])),
+    ):
+        count = len(times)
+        accumulator.update_batch(
+            times,
+            pair,
+            arm_collision,
+            np.full(count, 1.0),
+            np.full(count, 2.0),
+            np.zeros(count, dtype=np.bool_),
+            np.full(count, 100.0),
+            20.0,
+            np.zeros((count, 2)),
+        )
+
+    events = accumulator.finalize(1.0)
+    arm_events = [event for event in events if event.collision_type == "ARM_CROSS"]
+    assert [(event.start_s, event.end_s) for event in arm_events] == [
+        (0.0, 0.3),
+        (0.8, 0.8),
+    ]

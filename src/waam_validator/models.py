@@ -111,6 +111,31 @@ class ScheduleMetrics:
 
 
 @dataclass(slots=True)
+class RobotReachMetrics:
+    robot_id: int
+    reach_radius_mm: float
+    maximum_reach_mm: float
+    minimum_margin_mm: float
+    utilization_ratio: float
+    violation_point_count: int
+    first_violation_s: float | None
+    last_violation_s: float | None
+
+    @property
+    def passed(self) -> bool:
+        return self.violation_point_count == 0
+
+
+@dataclass(slots=True)
+class ReachMetrics:
+    robots: list[RobotReachMetrics]
+
+    @property
+    def passed(self) -> bool:
+        return all(robot.passed for robot in self.robots)
+
+
+@dataclass(slots=True)
 class LayerGeometry:
     layer_index: int
     z_bottom_mm: float
@@ -165,6 +190,7 @@ class ValidationResult:
     trajectory_rows: int
     target_watertight: bool
     schedule: ScheduleMetrics
+    reach: ReachMetrics
     collision: CollisionSimulationResult
     shape: ShapeMetrics
     layer_metrics: list[LayerMetrics]
@@ -180,7 +206,7 @@ class ValidationResult:
     def summary_dict(self) -> dict[str, Any]:
         completions = {str(item.robot_id): item.completion_s for item in self.schedule.robots}
         return {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "status": self.status,
             "input": {
                 "directory": str(self.input_dir),
@@ -192,6 +218,23 @@ class ValidationResult:
                 "robot_completion_s": completions,
                 "workload_imbalance_s": self.schedule.workload_imbalance_s,
                 "normalized_imbalance": self.schedule.normalized_imbalance,
+            },
+            "reach": {
+                "passed": self.reach.passed,
+                "robots": [
+                    {
+                        "robot_id": item.robot_id,
+                        "passed": item.passed,
+                        "reach_radius_mm": item.reach_radius_mm,
+                        "maximum_reach_mm": item.maximum_reach_mm,
+                        "minimum_margin_mm": item.minimum_margin_mm,
+                        "utilization_ratio": item.utilization_ratio,
+                        "violation_point_count": item.violation_point_count,
+                        "first_violation_s": item.first_violation_s,
+                        "last_violation_s": item.last_violation_s,
+                    }
+                    for item in self.reach.robots
+                ],
             },
             "collision": {
                 "passed": self.collision_free,
@@ -215,9 +258,7 @@ class ValidationResult:
                 "evaluated_layer_count": self.shape.evaluated_layer_count,
                 "failed_layer_ratio": self.shape.failed_layer_ratio,
                 "target_mesh_volume_mm3": self.shape.target_mesh_volume_mm3,
-                "target_volume_discrepancy_ratio": (
-                    self.shape.target_volume_discrepancy_ratio
-                ),
+                "target_volume_discrepancy_ratio": (self.shape.target_volume_discrepancy_ratio),
             },
             "failure_reasons": self.failure_reasons,
             "warnings": [issue.display() for issue in self.warnings],

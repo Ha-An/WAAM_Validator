@@ -127,6 +127,11 @@ def write_result_files(result: ValidationResult, config: Config) -> None:
                     "travel_length_mm",
                     "mean_deposition_speed_mm_s",
                     "mean_travel_speed_mm_s",
+                    "reach_radius_mm",
+                    "maximum_reach_mm",
+                    "reach_margin_mm",
+                    "reach_utilization_ratio",
+                    "reach_violation_point_count",
                 ],
                 [
                     {
@@ -140,12 +145,15 @@ def write_result_files(result: ValidationResult, config: Config) -> None:
                         "wait_ratio": item.wait_ratio,
                         "deposition_length_mm": item.deposition_length_mm,
                         "travel_length_mm": item.travel_length_mm,
-                        "mean_deposition_speed_mm_s": _optional(
-                            item.mean_deposition_speed_mm_s
-                        ),
+                        "mean_deposition_speed_mm_s": _optional(item.mean_deposition_speed_mm_s),
                         "mean_travel_speed_mm_s": _optional(item.mean_travel_speed_mm_s),
+                        "reach_radius_mm": reach.reach_radius_mm,
+                        "maximum_reach_mm": reach.maximum_reach_mm,
+                        "reach_margin_mm": reach.minimum_margin_mm,
+                        "reach_utilization_ratio": reach.utilization_ratio,
+                        "reach_violation_point_count": reach.violation_point_count,
                     }
-                    for item in result.schedule.robots
+                    for item, reach in zip(result.schedule.robots, result.reach.robots, strict=True)
                 ],
             )
         if config.output.save_layer_metrics_csv:
@@ -189,9 +197,7 @@ def write_result_files(result: ValidationResult, config: Config) -> None:
             )
         _write_warnings(output / "warnings.csv", result.warnings + result.errors)
         if config.output.save_report_markdown:
-            (output / "validation_report.md").write_text(
-                _render_markdown(result), encoding="utf-8"
-            )
+            (output / "validation_report.md").write_text(_render_markdown(result), encoding="utf-8")
     except OutputWriteError:
         raise
     except OSError as exc:
@@ -223,11 +229,14 @@ def _render_markdown(result: ValidationResult) -> str:
         f"W {item.wait_time_s:.2f} s"
         for item in result.schedule.robots
     )
+    reach_lines = "\n".join(
+        f"- R{item.robot_id}: max {item.maximum_reach_mm:.2f} / "
+        f"{item.reach_radius_mm:.2f} mm; margin {item.minimum_margin_mm:.2f} mm; "
+        f"violating points {item.violation_point_count}"
+        for item in result.reach.robots
+    )
     failures = (
-        "\n".join(
-            f"{index}. {reason}"
-            for index, reason in enumerate(result.failure_reasons, 1)
-        )
+        "\n".join(f"{index}. {reason}" for index, reason in enumerate(result.failure_reasons, 1))
         or "None"
     )
     warnings = "\n".join(f"- {item.display()}" for item in result.warnings) or "None"
@@ -251,6 +260,11 @@ def _render_markdown(result: ValidationResult) -> str:
 
 - Makespan: {result.schedule.makespan_s:.2f} s
 {robot_lines}
+
+## Robot Reach
+
+- Passed: {result.reach.passed}
+{reach_lines}
 
 ## Collision
 
@@ -291,7 +305,7 @@ def _render_markdown(result: ValidationResult) -> str:
 def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Path) -> None:
     """Best-effort minimal fatal error artifact."""
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "status": "ERROR",
         "code": error.code,
         "message": error.message,
@@ -323,6 +337,14 @@ def render_console_summary(result: ValidationResult) -> str:
             f"D={item.deposition_time_s:.2f} s | T={item.travel_time_s:.2f} s | "
             f"W={item.wait_time_s:.2f} s"
         )
+    lines.extend(["", "[Robot Reach]"])
+    for reach_item in result.reach.robots:
+        lines.append(
+            f"R{reach_item.robot_id} : max={reach_item.maximum_reach_mm:.2f} mm | "
+            f"limit={reach_item.reach_radius_mm:.2f} mm | "
+            f"margin={reach_item.minimum_margin_mm:.2f} mm | "
+            f"violations={reach_item.violation_point_count}"
+        )
     pair = result.collision.minimum_tcp_pair
     lines.extend(
         [
@@ -352,9 +374,7 @@ def render_console_summary(result: ValidationResult) -> str:
         ]
     )
     if result.failure_reasons:
-        lines.extend(
-            f"{index}. {reason}" for index, reason in enumerate(result.failure_reasons, 1)
-        )
+        lines.extend(f"{index}. {reason}" for index, reason in enumerate(result.failure_reasons, 1))
     else:
         lines.append("None")
     lines.extend(["", "[Warnings]"])

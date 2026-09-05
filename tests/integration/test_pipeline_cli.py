@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 import trimesh
+import yaml
 from typer.testing import CliRunner
 
 from waam_validator.cli import app
 from waam_validator.errors import InputValidationError
 from waam_validator.pipeline import run_validation
+from waam_validator.progress import ValidationProgress
 
 
 def test_full_headless_pipeline_pass(fixture_root: Path, tmp_path: Path) -> None:
@@ -32,10 +35,37 @@ def test_full_headless_pipeline_pass(fixture_root: Path, tmp_path: Path) -> None
     assert not deposited.is_empty
 
 
-def test_shape_fail_and_failure_reasons(fixture_root: Path, tmp_path: Path) -> None:
+def test_pipeline_reports_monotonic_measured_progress(fixture_root: Path, tmp_path: Path) -> None:
+    events: list[ValidationProgress] = []
     result = run_validation(
-        fixture_root / "shape_underfill", tmp_path / "underfill", headless=True
+        fixture_root / "collision_free",
+        tmp_path / "progress",
+        headless=True,
+        progress_callback=events.append,
     )
+
+    assert result.status == "PASS"
+    assert events[-1].overall_progress == 1.0
+    assert [event.overall_progress for event in events] == sorted(
+        event.overall_progress for event in events
+    )
+    stages = {event.stage for event in events}
+    assert {
+        "loading_inputs",
+        "collision",
+        "deposition",
+        "target_slicing",
+        "shape_metrics",
+        "artifacts",
+        "completed",
+    } <= stages
+    assert any(event.unit == "simulation_s" for event in events)
+    assert any(event.unit == "intervals" for event in events)
+    assert any(event.unit == "layers" for event in events)
+
+
+def test_shape_fail_and_failure_reasons(fixture_root: Path, tmp_path: Path) -> None:
+    result = run_validation(fixture_root / "shape_underfill", tmp_path / "underfill", headless=True)
     assert result.status == "FAIL"
     assert any("coverage" in reason.lower() for reason in result.failure_reasons)
 
@@ -96,6 +126,19 @@ def test_cli_check_and_input_error(fixture_root: Path, tmp_path: Path) -> None:
     assert "MISSING_CONFIG" in invalid.stdout
 
 
+def test_cli_check_accepts_runnable_reach_fail_input(fixture_root: Path, tmp_path: Path) -> None:
+    job = tmp_path / "reach-fail"
+    shutil.copytree(fixture_root / "collision_free", job)
+    config = yaml.safe_load((job / "config.yaml").read_text(encoding="utf-8"))
+    config["robots"][0]["reach_radius_mm"] = 100.0
+    (job / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["check", str(job)])
+
+    assert result.exit_code == 0
+    assert "WAAM INPUT CHECK : PASS" in result.stdout
+
+
 def test_cli_validation_fail_returns_one(fixture_root: Path, tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -115,7 +158,7 @@ def test_cli_validation_fail_returns_one(fixture_root: Path, tmp_path: Path) -> 
 
 def test_visual_outputs_and_replay(fixture_root: Path, tmp_path: Path) -> None:
     output = tmp_path / "visual"
-    result = run_validation(Path("examples/sample_job"), output)
+    result = run_validation(Path("examples/sample_job"), output, generate_replay=True)
     assert result.status == "PASS"
     for filename in (
         "overview_xy.png",
@@ -127,9 +170,7 @@ def test_visual_outputs_and_replay(fixture_root: Path, tmp_path: Path) -> None:
         assert (output / filename).stat().st_size > 0
 
 
-def test_repeated_runs_have_identical_numerical_results(
-    fixture_root: Path, tmp_path: Path
-) -> None:
+def test_repeated_runs_have_identical_numerical_results(fixture_root: Path, tmp_path: Path) -> None:
     first = run_validation(
         fixture_root / "collision_free", tmp_path / "repeat-1", headless=True
     ).summary_dict()
@@ -144,9 +185,7 @@ def test_fatal_input_writes_error_json(fixture_root: Path, tmp_path: Path) -> No
     job = tmp_path / "missing-target"
     job.mkdir()
     for filename in ("config.yaml", "trajectory.csv"):
-        (job / filename).write_bytes(
-            (fixture_root / "collision_free" / filename).read_bytes()
-        )
+        (job / filename).write_bytes((fixture_root / "collision_free" / filename).read_bytes())
     with pytest.raises(InputValidationError) as caught:
         run_validation(job, tmp_path / "fatal-output", headless=True)
     assert caught.value.code == "MISSING_TARGET"

@@ -15,8 +15,9 @@ from ..models import (
     TcpRadiusResult,
     TrajectorySet,
 )
+from ..progress import StageProgressCallback
 from ..trajectory.sampling import iter_simulation_samples
-from .geometry2d import check_arm_crossing_xy, check_tcp_radius_xy
+from .geometry2d import check_arm_crossing_xy_batch
 
 
 @dataclass(slots=True)
@@ -108,6 +109,94 @@ class CollisionEventAccumulator:
                 active.marker_x_mm = float(midpoint[0])
                 active.marker_y_mm = float(midpoint[1])
 
+    def update_batch(
+        self,
+        time_s: np.ndarray,
+        pair: tuple[int, int],
+        arm_collision: np.ndarray,
+        crossing_x_mm: np.ndarray,
+        crossing_y_mm: np.ndarray,
+        tcp_collision: np.ndarray,
+        tcp_distance_mm: np.ndarray,
+        required_tcp_distance_mm: float,
+        tcp_midpoint_xy: np.ndarray,
+    ) -> None:
+        """Consume collision arrays while visiting only state runs, not every sample."""
+        self._update_batch_one(
+            time_s,
+            pair,
+            "ARM_CROSS",
+            arm_collision,
+            crossing_x_mm=crossing_x_mm,
+            crossing_y_mm=crossing_y_mm,
+        )
+        self._update_batch_one(
+            time_s,
+            pair,
+            "TCP_RADIUS",
+            tcp_collision,
+            tcp_distance_mm=tcp_distance_mm,
+            required_tcp_distance_mm=required_tcp_distance_mm,
+            tcp_midpoint_xy=tcp_midpoint_xy,
+        )
+
+    def _update_batch_one(
+        self,
+        time_s: np.ndarray,
+        pair: tuple[int, int],
+        collision_type: str,
+        collided: np.ndarray,
+        *,
+        crossing_x_mm: np.ndarray | None = None,
+        crossing_y_mm: np.ndarray | None = None,
+        tcp_distance_mm: np.ndarray | None = None,
+        required_tcp_distance_mm: float | None = None,
+        tcp_midpoint_xy: np.ndarray | None = None,
+    ) -> None:
+        if len(time_s) == 0:
+            return
+        key = (collision_type, pair[0], pair[1])
+        changes = np.flatnonzero(collided[1:] != collided[:-1]) + 1
+        starts = np.concatenate((np.array([0]), changes))
+        stops = np.concatenate((changes, np.array([len(collided)])))
+        for start_raw, stop_raw in zip(starts, stops, strict=True):
+            start = int(start_raw)
+            stop = int(stop_raw)
+            active = self._active.get(key)
+            if not bool(collided[start]):
+                if active is not None and active.gap_start_s is None:
+                    active.gap_start_s = float(time_s[start])
+                continue
+
+            run_start_s = float(time_s[start])
+            if active is not None and active.gap_start_s is not None:
+                if run_start_s - active.gap_start_s > self.merge_gap_s:
+                    self._finish(key)
+                    active = None
+                else:
+                    active.gap_start_s = None
+            if active is None:
+                active = _ActiveEvent(collision_type, pair[0], pair[1], run_start_s, run_start_s)
+                self._active[key] = active
+            active.last_true_s = float(time_s[stop - 1])
+            active.gap_start_s = None
+
+            if crossing_x_mm is not None and active.crossing_x_mm is None:
+                active.crossing_x_mm = float(crossing_x_mm[start])
+                if crossing_y_mm is not None:
+                    active.crossing_y_mm = float(crossing_y_mm[start])
+            if tcp_distance_mm is not None:
+                relative_minimum = int(np.argmin(tcp_distance_mm[start:stop]))
+                minimum_index = start + relative_minimum
+                minimum = float(tcp_distance_mm[minimum_index])
+                if active.min_distance_mm is None or minimum < active.min_distance_mm:
+                    active.min_distance_mm = minimum
+                    active.required_distance_mm = required_tcp_distance_mm
+                    active.min_distance_time_s = float(time_s[minimum_index])
+                    if tcp_midpoint_xy is not None:
+                        active.marker_x_mm = float(tcp_midpoint_xy[minimum_index, 0])
+                        active.marker_y_mm = float(tcp_midpoint_xy[minimum_index, 1])
+
     def _finish(self, key: tuple[str, int, int], final_time: float | None = None) -> None:
         active = self._active.pop(key)
         end_s = active.last_true_s if final_time is None else final_time
@@ -145,39 +234,42 @@ class CollisionEventAccumulator:
 def run_collision_analysis(
     trajectories: TrajectorySet,
     config: Config,
+    *,
+    progress_callback: StageProgressCallback | None = None,
 ) -> CollisionSimulationResult:
     """Run enabled collision checks and always track global minimum TCP distance."""
     bases: dict[int, np.ndarray] = {
-        robot.id: np.asarray(robot.base_xyz_mm[:2], dtype=np.float64)
-        for robot in config.robots
+        robot.id: np.asarray(robot.base_xyz_mm[:2], dtype=np.float64) for robot in config.robots
     }
-    radii: dict[int, float] = {
-        robot.id: robot.tcp_radius_mm for robot in config.robots
-    }
+    radii: dict[int, float] = {robot.id: robot.tcp_radius_mm for robot in config.robots}
     accumulator = CollisionEventAccumulator(config.simulation.event_merge_gap_s)
     minimum_distance = float("inf")
     minimum_pair = ROBOT_PAIRS[0]
     minimum_required = radii[1] + radii[2]
     sample_count = 0
+    makespan = max(float(item.time_s[-1]) for item in trajectories.robots)
+    batch_size = config.simulation.batch_size
+    time_buffer = np.empty(batch_size, dtype=np.float64)
+    xy_buffer = np.empty((batch_size, 3, 2), dtype=np.float64)
+    buffered = 0
 
-    for sample in iter_simulation_samples(trajectories, config):
-        sample_count += 1
+    def process_batch(count: int) -> None:
+        nonlocal minimum_distance, minimum_pair, minimum_required
+        times = time_buffer[:count]
+        positions = xy_buffer[:count]
         for robot_a, robot_b in ROBOT_PAIRS:
-            tcp_a = sample.xyz_by_robot[robot_a - 1, :2]
-            tcp_b = sample.xyz_by_robot[robot_b - 1, :2]
-            tcp_result_raw = check_tcp_radius_xy(
-                tcp_a,
-                radii[robot_a],
-                tcp_b,
-                radii[robot_b],
-                config.collision.touching_is_collision,
-            )
-            if tcp_result_raw.distance_mm < minimum_distance:
-                minimum_distance = tcp_result_raw.distance_mm
+            tcp_a = positions[:, robot_a - 1]
+            tcp_b = positions[:, robot_b - 1]
+            distances = np.hypot(tcp_a[:, 0] - tcp_b[:, 0], tcp_a[:, 1] - tcp_b[:, 1])
+            required = radii[robot_a] + radii[robot_b]
+            local_minimum_index = int(np.argmin(distances))
+            local_minimum = float(distances[local_minimum_index])
+            if local_minimum < minimum_distance:
+                minimum_distance = local_minimum
                 minimum_pair = (robot_a, robot_b)
-                minimum_required = tcp_result_raw.required_distance_mm
+                minimum_required = required
             if config.collision.check_arm_crossing:
-                arm_result = check_arm_crossing_xy(
+                arm_collision, crossing_x, crossing_y = check_arm_crossing_xy_batch(
                     bases[robot_a],
                     tcp_a,
                     bases[robot_b],
@@ -186,24 +278,45 @@ def run_collision_analysis(
                     config.collision.touching_is_collision,
                 )
             else:
-                arm_result = SegmentIntersectionResult(False)
-            tcp_result = (
-                tcp_result_raw
-                if config.collision.check_tcp_radius
-                else TcpRadiusResult(
-                    False,
-                    tcp_result_raw.distance_mm,
-                    tcp_result_raw.required_distance_mm,
-                )
-            )
-            accumulator.update(
-                sample.time_s,
+                arm_collision = np.zeros(count, dtype=np.bool_)
+                crossing_x = np.full(count, np.nan, dtype=np.float64)
+                crossing_y = np.full(count, np.nan, dtype=np.float64)
+            if config.collision.check_tcp_radius:
+                if config.collision.touching_is_collision:
+                    tcp_collision = distances <= required
+                else:
+                    tcp_collision = distances < required
+            else:
+                tcp_collision = np.zeros(count, dtype=np.bool_)
+            accumulator.update_batch(
+                times,
                 (robot_a, robot_b),
-                arm_result,
-                tcp_result,
-                (tcp_a, tcp_b),
+                arm_collision,
+                crossing_x,
+                crossing_y,
+                tcp_collision,
+                distances,
+                required,
+                (tcp_a + tcp_b) / 2.0,
             )
-    makespan = max(float(item.time_s[-1]) for item in trajectories.robots)
+
+    last_reported = -1.0
+    for sample in iter_simulation_samples(trajectories, config):
+        time_buffer[buffered] = sample.time_s
+        xy_buffer[buffered] = sample.xyz_by_robot[:, :2]
+        buffered += 1
+        sample_count += 1
+        if buffered == batch_size:
+            process_batch(buffered)
+            fraction = min(1.0, float(time_buffer[buffered - 1]) / makespan) if makespan else 1.0
+            if progress_callback is not None and fraction - last_reported >= 0.001:
+                progress_callback(fraction, float(time_buffer[buffered - 1]), makespan)
+                last_reported = fraction
+            buffered = 0
+    if buffered:
+        process_batch(buffered)
+    if progress_callback is not None and last_reported < 1.0:
+        progress_callback(1.0, makespan, makespan)
     return CollisionSimulationResult(
         events=accumulator.finalize(makespan),
         minimum_tcp_distance_mm=minimum_distance,
@@ -216,6 +329,8 @@ def run_collision_analysis(
 def run_collision_simulation(
     trajectories: TrajectorySet,
     config: Config,
+    *,
+    progress_callback: StageProgressCallback | None = None,
 ) -> list[CollisionEvent]:
     """Run both configured collision checks and return merged events."""
-    return run_collision_analysis(trajectories, config).events
+    return run_collision_analysis(trajectories, config, progress_callback=progress_callback).events

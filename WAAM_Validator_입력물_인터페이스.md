@@ -2,7 +2,7 @@
 
 ## 1. 문서 목적
 
-이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator v1.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
+이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator 2.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
 
 알고리즘의 내부 표현은 자유롭다. 다만 검증 전에 알고리즘 결과를 본 문서의 `trajectory.csv`로 변환하는 Exporter/Adapter를 제공해야 한다.
 
@@ -39,7 +39,7 @@ validation_job/
 - `config.yaml`의 `base_xyz_mm`: 로봇 Base의 World 좌표
 - `target.stl`의 vertex: World 좌표의 mm 단위 점
 
-Validator v1.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
+Validator 2.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
 
 ## 4. `trajectory.csv` 계약
 
@@ -182,19 +182,37 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 
 ## 6. `config.yaml` 계약
 
-`config.yaml`은 검증 시나리오의 환경과 합격 기준을 정의한다. `schema_version`은 반드시 문자열 `"1.0"`이어야 하며, 모든 필수 필드가 존재해야 하고 알 수 없는 추가 필드는 허용하지 않는다.
+`config.yaml`은 검증 시나리오의 환경과 합격 기준을 정의한다. `schema_version`은 반드시 문자열 `"1.1"`이어야 하며, 모든 필수 필드가 존재해야 하고 알 수 없는 추가 필드는 허용하지 않는다. 1.0 입력은 자동 변환하지 않는다.
 
 | 그룹 | 주요 역할 |
 |---|---|
 | `simulation` | adaptive 충돌 sampling 간격과 event merge 설정 |
-| `robots` | ID 1·3의 Base World 좌표와 TCP 충돌 반경 |
+| `robots` | ID 1·2·3의 Base World 좌표, TCP 충돌 반경, 3D reach 반경 |
 | `process` | 기준 속도, layer 높이, 비드 폭, build plane, TCP Z 기준 |
+| `workspace` | World XY 평면에서 파트를 적층할 수 있는 필수 원형 영역 |
 | `collision` | Base–TCP 교차, TCP 반경, 경계 접촉 및 기하 오차 |
 | `validation` | 대기 위치, layer Z, 속도, STL 검사 정책 |
 | `shape_validation` | coverage, overfill, IoU 및 실패 layer 기준 |
 | `output` | JSON, CSV, STL, PNG, HTML 결과 저장 설정 |
 
 전체 예제는 [`examples/sample_job/config.yaml`](examples/sample_job/config.yaml)을 기준으로 삼는다.
+
+`workspace`는 다음 형식을 사용한다. `center_xy_mm`는 World 좌표이고
+`radius_mm`는 원의 반경이다. 원 전체는 세 robot base의 XY 좌표가 이루는 삼각형
+내부에 있어야 한다.
+Validator는 `D` interval의 두 endpoint에 bead 반폭을 더한 적층 외곽이 원 안에
+있는지 검사한다. `T`와 `W`는 home 및 safe travel을 위해 원 밖에 있을 수 있다.
+
+각 `robots[]`의 `reach_radius_mm`는 `base_xyz_mm`를 중심으로 하는 3D 구의 반경이다.
+모든 D/T/W TCP 절점이 이 구 안에 있어야 하며, 초과하면 입력 파싱을
+중단하지 않고 Validation `FAIL`로 판정한다.
+
+```yaml
+workspace:
+  shape: circle_xy
+  center_xy_mm: [0.0, 0.0]
+  radius_mm: 700.0
+```
 
 ## 7. `target.stl` 계약
 
@@ -208,7 +226,7 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 
 ## 8. 충돌 해석에 필요한 알고리즘 주의사항
 
-Validator v1.0은 각 로봇을 Base에서 TCP까지의 XY 선분으로 단순화한다.
+Validator 2.0은 각 로봇을 Base에서 TCP까지의 XY 선분으로 단순화한다.
 
 - 모드와 관계없이 `T`, `D`, `W` 모든 시간에 충돌을 검사한다.
 - Base–TCP XY 선분 교차와 TCP 간 XY 거리를 검사한다.
