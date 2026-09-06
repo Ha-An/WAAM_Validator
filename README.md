@@ -1,8 +1,13 @@
-# WAAM Validator 1.0.0
+# WAAM Validator (v1.0.0)
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
 
 WAAM Validator는 세 대 로봇의 WAAM(DED) 작업 계획을 실행 전에 검증하는 Python
 3.11+ 도구입니다. 하나의 작업 폴더에서 `config.yaml`, `trajectory.csv`,
 `target.stl`을 읽고 다음을 계산합니다.
+
+![WAAM Validator 3D trajectory 및 XY Capsule Replay](docs/assets/waam-validator-replay.gif)
 
 - 원본 trajectory interval 기준 일정, 상태별 시간·거리·평균속도
 - Robot Base 기준 3D Reach 위반
@@ -121,3 +126,10 @@ stderr에 출력합니다. Replay는 UI에서 주문 생성하십시오.
 - 각 실행은 새 output 폴더를 사용하고 기존 결과를 덮어쓰지 않습니다.
 - UI는 유휴·입력·결과 화면에서 polling하지 않고 실행 중에만 작은 상태 파일을 읽습니다.
 - 기본 UI는 인증 없는 로컬 도구이므로 `127.0.0.1` 밖으로 노출하지 않습니다.
+
+## 라이선스
+
+WAAM Validator는 [Apache License 2.0](LICENSE)으로 배포됩니다.
+
+Copyright 2026 Yosep Oh, AIIS Lab, Hanyang University ERICA.
+저작권 및 귀속 고지는 [NOTICE](NOTICE)를 확인하십시오.

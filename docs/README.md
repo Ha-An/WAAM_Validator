@@ -15,6 +15,7 @@
 | 테스트·정적 검사·패키징 | [개발자 안내](development.md) |
 | 앱 버전과 결과 schema 구분 | [버전 관리](versioning.md) |
 | 포함된 검증 입력과 benchmark | [검증 데이터](../tests/README.md) |
+| 사용·수정·재배포 조건 확인 | [Apache License 2.0](../LICENSE) |
 
 권장 순서는 다음과 같습니다.
 
