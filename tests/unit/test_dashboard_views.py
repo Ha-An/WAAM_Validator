@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from waam_validator.dashboard import single_app
-from waam_validator.dashboard.app import _collision_gauge, _shape_figure, _trajectory_inspection
+from waam_validator.dashboard.app import (
+    _collision_gauge,
+    _config_inspection,
+    _shape_figure,
+    _trajectory_inspection,
+)
 from waam_validator.dashboard.data import DashboardDataError, JobRecord, RunRecord
 from waam_validator.dashboard.single_app import _layer_display_rows, _reach_display_rows
 
@@ -176,3 +181,39 @@ def test_trajectory_makespan_displays_seconds_minutes_and_hours() -> None:
     assert "7,200.00초" in rendered
     assert "120.00분" in rendered
     assert "2.00시간" in rendered
+
+
+def test_config_view_distinguishes_robot_base_home_and_tcp_radius() -> None:
+    rendered = str(
+        _config_inspection(
+            {
+                "simulation": {
+                    "max_time_step_s": 0.1,
+                    "max_tcp_step_mm": 5.0,
+                    "event_merge_gap_s": 0.2,
+                    "batch_size": 10_000,
+                },
+                "robots": [
+                    {
+                        "id": 1,
+                        "base_xyz_mm": [-1400.0, 0.0, 0.0],
+                        "home_xyz_mm": [-1000.0, 0.0, 1700.0],
+                        "tcp_radius_mm": 100.0,
+                        "reach_radius_mm": 2000.0,
+                    }
+                ],
+                "process": {},
+                "workspace": {},
+                "collision": {},
+                "validation": {},
+                "shape_validation": {},
+                "output": {},
+            }
+        )
+    )
+
+    assert "Robot 1 Base 위치" in rendered
+    assert "Robot 1 Home TCP 위치" in rendered
+    assert "Robot 1 TCP 안전 반경 / Reach 반경" in rendered
+    assert "충돌 이벤트 병합 최대 간격" in rendered
+    assert "Schema" not in rendered

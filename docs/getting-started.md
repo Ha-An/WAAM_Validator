@@ -78,9 +78,9 @@ waam-validator check C:\data\my_job
 성공하면 세 입력 파일의 상태와 trajectory 행 수가 출력됩니다. 이 검사는 다음을
 수행합니다.
 
-- 고정 파일명과 Config schema 확인
+- 고정 파일명과 Config 필드·타입 확인
 - CSV header, 타입, robot ID, 시간 순서와 mode 의미 검사
-- D/T/W 구간의 layer, workspace, 정지·속도 규칙 검사
+- Deposition/Travel/Wait 구간의 layer, workspace, 정지·속도 규칙 검사
 - Target STL 로딩, watertight 설정과 좌표 범위 일관성 확인
 
 충돌 sample 생성, Target layer slicing, 형상 비교, 결과 파일 쓰기는 하지 않습니다.
@@ -164,7 +164,7 @@ waam-validator ui C:\data\my_job --no-browser
 | 증상 | 확인 사항 |
 | --- | --- |
 | `waam-validator` 명령을 찾지 못함 | 가상환경 활성화 또는 editable install 여부 |
-| `schema_version` 오류 | Config가 문자열 `'1.1'`인지, 1.0 필드가 남지 않았는지 |
+| `schema_version` 오류 | Config에는 이 필드를 사용하지 않으므로 해당 행을 제거했는지 |
 | 입력 확인 후 실행 버튼 비활성 | 입력이 BLOCKED인지, 검사 후 파일 크기·수정 시각이 바뀌었는지 |
 | UI가 열리지 않음 | port 사용 여부, `--port` 변경, 출력된 URL 직접 접속 |
 | `FAIL`인데 결과 파일이 있음 | 정상 동작. 계산 가능한 기준 위반은 결과를 저장하고 종료 코드 1 반환 |

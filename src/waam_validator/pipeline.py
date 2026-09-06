@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from ._version import __version__
 from .collision.simulator import run_collision_analysis
 from .config.loader import load_config
 from .config.models import Config
@@ -159,6 +160,7 @@ def run_validation(
     run_output = prepare_output_directory(resolved_input, output_dir)
     configure_file_logging(run_output)
     try:
+        LOGGER.info("WAAM Validator version %s", __version__)
         _report_progress(progress_callback, "loading_inputs", "입력 파일을 읽고 있습니다.")
         resolved_input, config_path, trajectory_path, target_path = _resolve_input(resolved_input)
         LOGGER.info("Loading configuration")

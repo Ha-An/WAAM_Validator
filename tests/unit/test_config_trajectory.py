@@ -50,6 +50,36 @@ def test_circular_workspace_is_loaded_and_must_lie_inside_robot_triangle(
         load_config(invalid_path)
 
 
+def test_optional_nco_home_and_process_metadata_are_loaded(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    source = fixture_root / "collision_free" / "config.yaml"
+    data = yaml.safe_load(source.read_text(encoding="utf-8"))
+    homes = (
+        [-1000.0, 0.0, 1700.0],
+        [500.0, -866.025404, 1700.0],
+        [500.0, 866.025404, 1700.0],
+    )
+    for robot, home in zip(data["robots"], homes, strict=True):
+        robot["home_xyz_mm"] = home
+    data["process"].update(
+        {
+            "safe_travel_z_mm": 1700.0,
+            "arc_on_time_s": 1.0,
+            "arc_off_time_s": 1.0,
+        }
+    )
+    path = tmp_path / "nco-metadata.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.robots[0].home_xyz_mm == (-1000.0, 0.0, 1700.0)
+    assert config.process.safe_travel_z_mm == 1700.0
+    assert config.process.arc_on_time_s == 1.0
+    assert config.process.arc_off_time_s == 1.0
+
+
 def test_deposition_bead_must_stay_inside_circular_workspace(
     fixture_root: Path, tmp_path: Path
 ) -> None:
@@ -89,7 +119,7 @@ def test_invalid_extra_csv_column_fails(fixture_root: Path, tmp_path: Path) -> N
 
 @pytest.mark.parametrize(
     "case",
-    ["two_robots", "duplicate_id", "invalid_id", "negative_radius", "zero_bead", "schema"],
+    ["two_robots", "duplicate_id", "invalid_id", "negative_radius", "zero_bead", "extra"],
 )
 def test_invalid_config_cases(fixture_root: Path, tmp_path: Path, case: str) -> None:
     source = fixture_root / "collision_free" / "config.yaml"
@@ -105,7 +135,7 @@ def test_invalid_config_cases(fixture_root: Path, tmp_path: Path, case: str) -> 
     elif case == "zero_bead":
         data["process"]["bead_width_mm"] = 0.0
     else:
-        data["schema_version"] = "2.0"
+        data["unknown_config_field"] = True
     path = tmp_path / f"{case}.yaml"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     with pytest.raises(InputValidationError) as caught:

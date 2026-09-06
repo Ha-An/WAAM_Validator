@@ -5,7 +5,7 @@
 ```text
 WAAM_Validator/
 ├── src/waam_validator/
-│   ├── config/          # Pydantic schema와 YAML 로딩
+│   ├── config/          # Pydantic Config 모델과 YAML 로딩
 │   ├── trajectory/      # CSV 로딩, 의미 검사, 보간, adaptive sampling, Reach
 │   ├── schedule/        # 원본 interval 기반 시간·거리 통계
 │   ├── collision/       # 2D geometry, streaming 검사, event 병합
@@ -14,6 +14,7 @@ WAAM_Validator/
 │   ├── reporting/       # JSON, CSV, Markdown, log와 console 출력
 │   ├── dashboard/       # 단일 작업 UI와 worker(내부 경로명은 호환상 유지)
 │   ├── cli.py           # Typer CLI
+│   ├── _version.py      # 애플리케이션 버전의 단일 원본
 │   ├── models.py        # typed runtime/result dataclass
 │   ├── pipeline.py      # 전체 Validation orchestration
 │   └── progress.py      # 진행 event 계약
@@ -21,7 +22,9 @@ WAAM_Validator/
 │   ├── unit/
 │   ├── integration/
 │   ├── performance/
-│   └── fixtures/
+│   ├── fixtures/
+│   └── 01/ ... 10/      # 절차적 benchmark 입력
+├── scripts/             # fixture·benchmark 입력 생성기
 ├── examples/sample_job/
 ├── docs/
 ├── pyproject.toml
@@ -101,7 +104,7 @@ polygon이 모두 같은 left-row 규칙을 사용해야 합니다. 마지막 �
 
 ### 정확 통계와 sample 통계 분리
 
-Schedule과 D/T 거리·평균 속도는 원본 interval에서 계산해야 합니다. Adaptive
+Schedule과 Deposition/Travel 거리·평균 속도는 원본 interval에서 계산해야 합니다. Adaptive
 timeline은 충돌 검사용이며, 설정 해상도 변화가 schedule 통계를 바꾸면 안 됩니다.
 
 ### UI downsampling 격리
@@ -113,7 +116,7 @@ inspection의 통계와 worker Validation에는 항상 원본 객체를 사용�
 
 계산 가능한 위반은 결과 파일을 쓴 뒤 FAIL로 반환해야 합니다. 구조·파싱·좌표,
 Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새로운 판정 항목을
-추가할 때 CLI, summary schema, CSV, 보고서, UI, Failure Reasons와 테스트를 함께
+추가할 때 CLI, 결과 JSON schema, CSV, 보고서, UI, Failure Reasons와 테스트를 함께
 갱신합니다.
 
 ### 결정론
@@ -132,7 +135,7 @@ Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새
 
 ## 코드 변경 점검표
 
-- [ ] 공개 schema/API 변경에 맞게 package version을 조정했다.
+- [ ] 공개 API·동작 변경에 맞게 `src/waam_validator/_version.py`의 애플리케이션 버전을 조정했다.
 - [ ] `README.md`와 관련 `docs/` 문서를 갱신했다.
 - [ ] synthetic unit test와 필요한 integration regression을 추가했다.
 - [ ] PASS/FAIL, error code와 Failure Reasons 순서를 확인했다.
@@ -145,6 +148,7 @@ Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새
 - [검증 방법과 판정 기준](validation-method.md)
 - [Python API](python-api.md)
 - [결과 및 산출물 참조](results-reference.md)
+- [버전 및 호환성](versioning.md)
 - [입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md)
 
 [문서 안내로 돌아가기](README.md)

@@ -22,7 +22,6 @@ CSV_HEADER = ("robot_id", "time_s", "x_mm", "y_mm", "z_mm", "mode")
 
 def config(*, visuals: bool = False) -> dict[str, object]:
     return {
-        "schema_version": "1.1",
         "simulation": {
             "max_time_step_s": 0.1,
             "max_tcp_step_mm": 5.0,
@@ -84,7 +83,6 @@ def config(*, visuals: bool = False) -> dict[str, object]:
             "save_layer_metrics_csv": True,
             "save_deposited_stl": True,
             "save_static_plots": visuals,
-            "save_interactive_html": visuals,
             "animation_sample_interval_s": 1.0,
         },
     }

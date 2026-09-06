@@ -35,7 +35,7 @@ def test_resolve_inputs_defaults_to_standard_files_and_inspects_details(tmp_path
     assert len(inspection.trajectory["robots"]) == 3
     assert inspection.target["face_count"] > 0
     assert inspection.target["watertight"] is True
-    assert inspection.config["schema_version"] == "1.1"
+    assert "schema_version" not in inspection.config
     assert inspection_is_current(inspection.to_dict(), paths) is True
 
 

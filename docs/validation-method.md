@@ -11,7 +11,7 @@
   → Config/CSV/STL 로딩과 의미 검사
   → 원본 interval 일정·거리·Reach 계산
   → adaptive timeline 충돌 검사
-  → D interval의 layer polygon 생성
+  → Deposition interval의 layer polygon 생성
   → Target STL layer slicing
   → layer/전체 형상 지표 계산
   → PASS/FAIL 결정과 산출물 생성
@@ -25,22 +25,22 @@ Reach, 충돌, 형상 또는 설정된 공정 기준을 위반하면 정상 결�
 각 행의 `mode`는 **그 행의 시간·위치에서 다음 행까지** 적용됩니다. 따라서 로봇별
 행이 `N`개이면 계산 interval은 `N-1`개이고 마지막 행은 종료 상태를 나타냅니다.
 
-- `D`: Deposition interval
-- `T`: Travel interval
-- `W`: Wait interval
+- `D`: Deposition(재료를 적층하며 이동) interval
+- `T`: Travel(재료를 적층하지 않는 이동) interval
+- `W`: Wait(허용 오차 안에서 위치를 유지하며 대기) interval
 
 로봇별 첫 timestamp는 `0`, 시간은 엄격히 증가하며 마지막 mode는 `W`여야 합니다.
 좌표 보간은 원본 두 절점 사이의 선형 보간입니다.
 
 ### 사전 의미 검사
 
-- D는 XY 길이가 있어야 하며 layer 허용 오차를 넘는 수직 이동을 할 수 없습니다.
-- D의 대표 Z는 설정한 `top` 또는 `center` 규칙으로 유효한 layer를 가리켜야 합니다.
-- D 명목 bead 외곽이 원형 workspace 밖으로 나가면 입력 오류입니다.
-- W 이동량이 허용 오차보다 크면 실행 가능한 정상 FAIL입니다.
-- 정지 상태의 T는 warning입니다.
-- D/T 속도 위반은 `fail_on_speed_violation`에 따라 warning 또는 정상 FAIL입니다.
-- 모든 D/T/W 원본 절점은 3D Reach 평가 대상입니다.
+- Deposition은 XY 길이가 있어야 하며 layer 허용 오차를 넘는 수직 이동을 할 수 없습니다.
+- Deposition의 대표 Z는 설정한 `top` 또는 `center` 규칙으로 유효한 layer를 가리켜야 합니다.
+- Deposition 명목 bead 외곽이 원형 workspace 밖으로 나가면 입력 오류입니다.
+- Wait 이동량이 허용 오차보다 크면 실행 가능한 정상 FAIL입니다.
+- 정지 상태의 Travel은 warning입니다.
+- Deposition/Travel 속도 위반은 `fail_on_speed_violation`에 따라 warning 또는 정상 FAIL입니다.
+- 모든 Deposition/Travel/Wait 원본 절점은 3D Reach 평가 대상입니다.
 
 ## Schedule과 경로 통계
 
@@ -52,8 +52,8 @@ dt = time[i+1] - time[i]
 distance = ||xyz[i+1] - xyz[i]||₂
 ```
 
-현재 행의 mode에 따라 `dt`와 `distance`를 D/T/W bucket에 누적합니다. W는 시간만
-집계하고 거리 지표는 제공하지 않습니다.
+현재 행의 mode에 따라 `dt`와 `distance`를 Deposition/Travel/Wait bucket에
+누적합니다. Wait는 시간만 집계하고 거리 지표는 제공하지 않습니다.
 
 ```text
 deposition mean speed = deposition length / deposition time
@@ -65,7 +65,7 @@ normalized imbalance  = workload imbalance / makespan
 ```
 
 로봇별 `deposition_ratio`, `travel_ratio`, `wait_ratio`는 각 로봇의 completion을
-분모로 하며 합이 1입니다. UI의 로봇 작업시간 비율 그래프는 공통 비교를 위해
+분모로 하며 합이 1입니다. UI의 로봇별 상태 시간 비율 그래프는 공통 비교를 위해
 makespan을 100%로 사용하고, 먼저 끝난 로봇의 남은 시간은 Wait가 아니라
 `완료 후 비활성`으로 표시합니다.
 
@@ -89,6 +89,10 @@ margin = configured reach radius - maximum reach
 
 Reach는 기구학적 자세나 관절 제한이 아니라 Base–TCP 직선거리 기반의 1차 계획
 검사입니다.
+
+`base_xyz_mm`은 로봇이 World 좌표계에 고정 설치된 기준점이며 모든 Reach와 ARM_CROSS
+계산의 원점입니다. `home_xyz_mm`은 입력 시작·종료 등에 사용할 수 있는 선택적 명목
+TCP 대기점일 뿐이며, Base를 대신하거나 Reach 중심을 바꾸지 않습니다.
 
 ## Adaptive 충돌 검사
 
@@ -134,9 +138,9 @@ required distance = radius_a + radius_b
 
 ## 적층 형상 생성
 
-각 D interval을 XY centerline으로 보고 `bead_width_mm / 2`만큼 round-cap buffer해
-명목 비드 polygon을 만듭니다. D 양 끝 Z의 평균으로 layer를 정하고 같은 layer의
-polygon을 모두 union합니다.
+각 Deposition interval을 XY centerline으로 보고 `bead_width_mm / 2`만큼 round-cap
+buffer해 명목 비드 polygon을 만듭니다. Deposition 양 끝 Z의 평균으로 layer를 정하고
+같은 layer의 polygon을 모두 union합니다.
 
 Polygon은 다음 정규화 과정을 거칩니다.
 
@@ -160,15 +164,17 @@ Target 또는 deposition이 존재할 수 있는 모든 layer를 평가 대상�
 
 ## 형상 지표
 
-각 layer에서 Target polygon을 `T`, Deposition polygon을 `D`, 교집합을 `I`라고
-하면 다음과 같습니다.
-
 ```text
-Coverage        = area(I) / area(T)
-Underfill ratio = area(T - D) / area(T)
-Overfill ratio  = area(D - T) / area(T)
-IoU             = area(I) / area(T ∪ D)
+Coverage        = intersection area / target area
+Underfill ratio = (target - deposition) area / target area
+Overfill ratio  = (deposition - target) area / target area
+IoU             = intersection area / union area
 ```
+
+Coverage, Underfill와 IoU처럼 이론상 단위 구간에 속하는 비율은 기하 연산의 미세한
+부동소수점 오차가 0 또는 1을 넘지 않도록 `[0, 1]`로 제한합니다. Overfill ratio는
+Target보다 바깥 적층 면적이 더 클 수 있으므로 1을 초과할 수 있으며 상한을 제한하지
+않습니다.
 
 Target이 비어 있고 deposition만 있는 layer도 평가하며 FAIL입니다. Target은 있지만
 deposition이 없으면 Coverage 0, Underfill 1, IoU 0으로 FAIL입니다. 개별 layer의
@@ -195,7 +201,7 @@ failed ratio     = failed layer count / evaluated layer count
 
 다음 중 하나라도 있으면 정상 `FAIL`입니다.
 
-- W 위치 위반 또는 `fail_on_speed_violation: true`인 속도 위반
+- Wait 위치 위반 또는 `fail_on_speed_violation: true`인 속도 위반
 - Robot Reach 초과
 - 활성화된 ARM_CROSS 또는 TCP_RADIUS event
 - 전체 Coverage, Overfill, IoU 또는 failed-layer ratio 기준 위반

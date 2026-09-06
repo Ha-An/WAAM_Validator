@@ -1,5 +1,6 @@
 """Public API for the WAAM validation simulator."""
 
+from ._version import __version__
 from .collision.simulator import run_collision_simulation
 from .config.loader import load_config
 from .pipeline import run_validation
@@ -28,6 +29,5 @@ __all__ = [
     "slice_target_layers",
     "validate_trajectory_set",
     "ValidationProgress",
+    "__version__",
 ]
-
-__version__ = "2.0.0"

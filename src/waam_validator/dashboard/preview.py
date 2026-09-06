@@ -183,8 +183,36 @@ def _scene(
                 text=[f"R{robot.id}"],
                 textposition="top center",
                 marker={"size": 8, "color": _ROBOT_COLORS[robot.id], "symbol": "diamond"},
+                hovertemplate=(
+                    f"R{robot.id} Base<br>로봇 설치 기준점"
+                    f"<br>X {base[0]:,.2f} mm · Y {base[1]:,.2f} mm · Z {base[2]:,.2f} mm"
+                    "<extra></extra>"
+                ),
             )
         )
+        if robot.home_xyz_mm is not None:
+            home = np.asarray(robot.home_xyz_mm, dtype=np.float64)
+            figure.add_trace(
+                go.Scatter3d(
+                    x=[home[0]],
+                    y=[home[1]],
+                    z=[home[2]],
+                    mode="markers+text",
+                    name=f"R{robot.id} home TCP",
+                    text=[f"R{robot.id} Home"],
+                    textposition="bottom center",
+                    marker={
+                        "size": 7,
+                        "color": _ROBOT_COLORS[robot.id],
+                        "symbol": "x",
+                    },
+                    hovertemplate=(
+                        f"R{robot.id} Home TCP<br>공구 기준점의 명목 대기 위치"
+                        f"<br>X {home[0]:,.2f} mm · Y {home[1]:,.2f} mm · Z {home[2]:,.2f} mm"
+                        "<extra></extra>"
+                    ),
+                )
+            )
         figure.add_trace(_reach_trace(robot.id, base, robot.reach_radius_mm))
         selected = _bounded_interval_indices(trajectory.mode, max_intervals)
         points_shown[robot.id] = min(TRAJECTORY_POINT_LIMIT_PER_ROBOT, int(len(selected) * 3))

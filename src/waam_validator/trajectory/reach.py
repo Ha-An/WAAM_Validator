@@ -1,4 +1,4 @@
-"""Robot TCP reach metrics for the spherical Config 1.1 reach proxy."""
+"""Robot TCP reach metrics for the spherical Config reach proxy."""
 
 from __future__ import annotations
 

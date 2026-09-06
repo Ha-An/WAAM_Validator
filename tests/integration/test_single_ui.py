@@ -111,6 +111,7 @@ def test_single_job_ui_inspection_enables_same_context_run(
     layout = client.get("/_dash-layout")
     assert layout.status_code == 200
     assert b'"id":"job-dir-input"' in layout.data
+    assert b"v1.0" in layout.data
     assert b'"debounce":false' in layout.data
     assert b'"id":"job-select"' not in layout.data
     assert b'"id":"input-gantt"' in layout.data

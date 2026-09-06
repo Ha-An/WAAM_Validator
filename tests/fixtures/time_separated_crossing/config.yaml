@@ -1,4 +1,3 @@
-schema_version: '1.1'
 simulation:
   max_time_step_s: 0.1
   max_tcp_step_mm: 5.0
@@ -67,5 +66,4 @@ output:
   save_layer_metrics_csv: true
   save_deposited_stl: true
   save_static_plots: false
-  save_interactive_html: false
   animation_sample_interval_s: 1.0

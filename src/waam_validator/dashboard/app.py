@@ -559,30 +559,51 @@ def _config_inspection(config: JsonDict) -> Any:
     collision = _section(config, "collision")
     validation = _section(config, "validation")
     shape = _section(config, "shape_validation")
+    output = _section(config, "output")
     rows: list[tuple[str, object]] = [
-        ("Schema", config.get("schema_version")),
-        ("최대 시간 간격", f"{simulation.get('max_time_step_s', '—')} s"),
-        ("최대 TCP 이동", f"{simulation.get('max_tcp_step_mm', '—')} mm"),
         (
-            "적층 / 이동 속도",
+            "충돌 샘플 최대 시간 간격",
+            f"{simulation.get('max_time_step_s', '—')} s",
+        ),
+        (
+            "충돌 샘플당 최대 TCP 이동거리",
+            f"{simulation.get('max_tcp_step_mm', '—')} mm",
+        ),
+        (
+            "충돌 이벤트 병합 최대 간격",
+            f"{simulation.get('event_merge_gap_s', '—')} s",
+        ),
+        ("스트리밍 처리 묶음 크기", simulation.get("batch_size", "—")),
+        (
+            "Deposition(적층) / Travel(비적층 이동) 기준 속도",
             f"{process.get('deposition_speed_mm_s', '—')} / "
             f"{process.get('travel_speed_mm_s', '—')} mm/s",
         ),
         (
-            "Layer / Bead",
+            "레이어 높이 / 명목 비드 폭",
             f"{process.get('layer_height_mm', '—')} / {process.get('bead_width_mm', '—')} mm",
         ),
         (
-            "Build plane / Z 기준",
+            "빌드 평면 높이 / TCP Z 해석 기준",
             f"{process.get('build_plane_z_mm', '—')} mm / {process.get('tcp_z_reference', '—')}",
         ),
+        ("비적층 이동 안전 높이", f"{process.get('safe_travel_z_mm', '—')} mm"),
         (
-            "ARM / TCP 검사",
+            "아크 시작 / 종료 대기시간",
+            f"{process.get('arc_on_time_s', '—')} / {process.get('arc_off_time_s', '—')} s",
+        ),
+        (
+            "Base–TCP 선분 교차 / TCP 안전 반경 검사",
             f"{collision.get('check_arm_crossing', '—')} / "
             f"{collision.get('check_tcp_radius', '—')}",
         ),
+        ("경계 접촉을 충돌로 판정", collision.get("touching_is_collision", "—")),
         (
-            "Workspace",
+            "충돌 기하 계산 허용 오차",
+            f"{collision.get('geometry_epsilon_mm', '—')} mm",
+        ),
+        (
+            "원형 적층 작업영역",
             (
                 f"{workspace.get('shape')} · center "
                 f"{_vector(workspace.get('center_xy_mm'))} · "
@@ -592,9 +613,26 @@ def _config_inspection(config: JsonDict) -> Any:
             ),
         ),
         (
-            "속도 위반 FAIL / 허용 오차",
+            "속도 위반을 FAIL로 처리 / 상대 허용 오차",
             f"{validation.get('fail_on_speed_violation', '—')} / "
             f"{validation.get('speed_relative_tolerance', '—')}",
+        ),
+        (
+            "Wait(위치 유지 대기) 허용 이동량",
+            f"{validation.get('wait_position_tolerance_mm', '—')} mm",
+        ),
+        (
+            "Deposition(적층) 레이어 Z 허용 오차",
+            f"{validation.get('layer_z_tolerance_mm', '—')} mm",
+        ),
+        (
+            "Target 밀폐 필수 / 제한적 복구 시도",
+            f"{validation.get('require_watertight_target', '—')} / "
+            f"{validation.get('attempt_target_repair', '—')}",
+        ),
+        (
+            "Target 체적 차이 경고 기준",
+            validation.get("target_volume_discrepancy_warning_ratio", "—"),
         ),
         (
             "Coverage / IoU / Overfill",
@@ -607,14 +645,54 @@ def _config_inspection(config: JsonDict) -> Any:
             f"≥ {shape.get('minimum_layer_iou', '—')} / "
             f"≤ {shape.get('maximum_failed_layer_ratio', '—')}",
         ),
+        (
+            "폴리곤 곡선 근사 해상도 / 좌표 정밀도",
+            f"{shape.get('polygon_buffer_resolution', '—')} / "
+            f"{shape.get('polygon_snap_tolerance_mm', '—')} mm",
+        ),
+        ("미소 면적 판정 기준", f"{shape.get('area_epsilon_mm2', '—')} mm²"),
+        (
+            "핵심 결과 저장",
+            "Summary JSON {} · 보고서 {} · 적층 STL {}".format(
+                output.get("save_summary_json", "—"),
+                output.get("save_report_markdown", "—"),
+                output.get("save_deposited_stl", "—"),
+            ),
+        ),
+        (
+            "지표 CSV 저장",
+            "로봇 {} · 충돌 이벤트 {} · 레이어 {}".format(
+                output.get("save_robot_metrics_csv", "—"),
+                output.get("save_collision_events_csv", "—"),
+                output.get("save_layer_metrics_csv", "—"),
+            ),
+        ),
+        ("정적 그래프 저장", output.get("save_static_plots", "—")),
+        (
+            "직접 Replay 생성 시 기본 프레임 간격",
+            f"{output.get('animation_sample_interval_s', '—')} s",
+        ),
     ]
     robots = config.get("robots", [])
     for robot in robots if isinstance(robots, list) else []:
         if isinstance(robot, dict):
             rows.append(
                 (
-                    f"Robot {robot.get('id')} Base / TCP",
-                    f"{_vector(robot.get('base_xyz_mm'))} / {robot.get('tcp_radius_mm', '—')} mm",
+                    f"Robot {robot.get('id')} Base 위치",
+                    _vector(robot.get("base_xyz_mm")),
+                )
+            )
+            rows.append(
+                (
+                    f"Robot {robot.get('id')} Home TCP 위치",
+                    _vector(robot.get("home_xyz_mm")) if robot.get("home_xyz_mm") else "미설정",
+                )
+            )
+            rows.append(
+                (
+                    f"Robot {robot.get('id')} TCP 안전 반경 / Reach 반경",
+                    f"{robot.get('tcp_radius_mm', '—')} / "
+                    f"{robot.get('reach_radius_mm', '—')} mm",
                 )
             )
     return _detail_rows(rows)

@@ -14,6 +14,11 @@ from .layer_index import layer_bounds
 from .polygon_utils import empty_polygon, normalize_polygon
 
 
+def _unit_interval(value: float) -> float:
+    """Clamp a mathematically unit-bounded ratio against geometry round-off."""
+    return min(1.0, max(0.0, value))
+
+
 def compute_shape_metrics(
     deposited_layers: Mapping[int, BaseGeometry],
     target_layers: Mapping[int, BaseGeometry],
@@ -66,10 +71,12 @@ def compute_shape_metrics(
                 iou = 0.0
                 passed = False
             else:
-                coverage = intersection_area / target_area
-                underfill_ratio = underfill_area / target_area
+                coverage = _unit_interval(intersection_area / target_area)
+                underfill_ratio = _unit_interval(underfill_area / target_area)
                 overfill_ratio = overfill_area / target_area
-                iou = intersection_area / union_area if union_area > epsilon else 1.0
+                iou = _unit_interval(
+                    intersection_area / union_area if union_area > epsilon else 1.0
+                )
                 passed = iou >= config.shape_validation.minimum_layer_iou
             evaluated_layers += 1
             failed_layers += int(not passed)
@@ -106,12 +113,12 @@ def compute_shape_metrics(
         raise TargetValidationError(
             "TARGET_SECTION_FAILED", "Target slicing produced no non-empty evaluation layer."
         )
-    coverage = totals["intersection"] / totals["target"]
-    underfill_ratio = totals["under"] / totals["target"]
+    coverage = _unit_interval(totals["intersection"] / totals["target"])
+    underfill_ratio = _unit_interval(totals["under"] / totals["target"])
     overfill_ratio = totals["over"] / totals["target"]
     union_volume = totals["target"] + totals["deposited"] - totals["intersection"]
-    iou = totals["intersection"] / union_volume if union_volume > 0 else 1.0
-    failed_ratio = failed_layers / evaluated_layers if evaluated_layers else 0.0
+    iou = _unit_interval(totals["intersection"] / union_volume if union_volume > 0 else 1.0)
+    failed_ratio = _unit_interval(failed_layers / evaluated_layers if evaluated_layers else 0.0)
     mesh_volume = (
         totals["target"] if target_mesh_volume_mm3 is None else abs(target_mesh_volume_mm3)
     )

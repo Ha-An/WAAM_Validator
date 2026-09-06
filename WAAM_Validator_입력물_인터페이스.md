@@ -2,7 +2,7 @@
 
 ## 1. 문서 목적
 
-이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator 2.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
+이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator 1.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
 
 알고리즘의 내부 표현은 자유롭다. 다만 검증 전에 알고리즘 결과를 본 문서의 `trajectory.csv`로 변환하는 Exporter/Adapter를 제공해야 한다.
 
@@ -36,10 +36,15 @@ validation_job/
 - 길이 및 좌표 단위: mm
 - 시간 단위: s
 - `trajectory.csv`의 XYZ: 로봇 관절값이 아닌 TCP의 World 좌표
-- `config.yaml`의 `base_xyz_mm`: 로봇 Base의 World 좌표
+- `config.yaml`의 `base_xyz_mm`: 움직이지 않는 로봇 설치 기준점의 World 좌표
+- `config.yaml`의 `home_xyz_mm`: 선택적인 TCP 명목 대기 위치의 World 좌표
 - `target.stl`의 vertex: World 좌표의 mm 단위 점
 
-Validator 2.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
+Base는 Reach와 단순 팔 선분의 시작점이고, Home은 TCP가 대기하는 위치다. 두 좌표를
+같은 개념으로 사용하면 안 된다. 현재 Validator는 Home을 시각적·경로 생성 참조로
+사용하며 trajectory 시작·종료 좌표와의 일치를 강제하지 않는다.
+
+Validator 1.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
 
 ## 4. `trajectory.csv` 계약
 
@@ -182,13 +187,15 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 
 ## 6. `config.yaml` 계약
 
-`config.yaml`은 검증 시나리오의 환경과 합격 기준을 정의한다. `schema_version`은 반드시 문자열 `"1.1"`이어야 하며, 모든 필수 필드가 존재해야 하고 알 수 없는 추가 필드는 허용하지 않는다. 1.0 입력은 자동 변환하지 않는다.
+`config.yaml`은 검증 시나리오의 환경과 합격 기준을 정의한다. Config에는 별도의
+버전 필드를 두지 않는다. 모든 필수 필드가 존재해야 하고 `schema_version`을 포함한
+알 수 없는 추가 필드는 허용하지 않는다.
 
 | 그룹 | 주요 역할 |
 |---|---|
-| `simulation` | adaptive 충돌 sampling 간격과 event merge 설정 |
-| `robots` | ID 1·2·3의 Base World 좌표, TCP 충돌 반경, 3D reach 반경 |
-| `process` | 기준 속도, layer 높이, 비드 폭, build plane, TCP Z 기준 |
+| `simulation` | 적응형 충돌 샘플의 시간·TCP 이동 간격, 이벤트 병합과 처리 묶음 크기 |
+| `robots` | ID 1·2·3의 고정 Base 위치, 선택적 Home TCP 위치, TCP 안전 반경과 3D Reach 반경 |
+| `process` | Deposition(적층)·Travel(비적층 이동) 기준 속도, 레이어 높이, 비드 폭, 빌드 평면과 TCP Z 해석 기준 |
 | `workspace` | World XY 평면에서 파트를 적층할 수 있는 필수 원형 영역 |
 | `collision` | Base–TCP 교차, TCP 반경, 경계 접촉 및 기하 오차 |
 | `validation` | 대기 위치, layer Z, 속도, STL 검사 정책 |
@@ -226,7 +233,7 @@ workspace:
 
 ## 8. 충돌 해석에 필요한 알고리즘 주의사항
 
-Validator 2.0은 각 로봇을 Base에서 TCP까지의 XY 선분으로 단순화한다.
+Validator 1.0은 각 로봇을 Base에서 TCP까지의 XY 선분으로 단순화한다.
 
 - 모드와 관계없이 `T`, `D`, `W` 모든 시간에 충돌을 검사한다.
 - Base–TCP XY 선분 교차와 TCP 간 XY 거리를 검사한다.

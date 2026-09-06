@@ -33,15 +33,15 @@ def _one_point_trajectories(
     return config, TrajectorySet(tuple(robots), 3)  # type: ignore[arg-type]
 
 
-def test_config_11_requires_workspace_and_positive_reach(
+def test_config_requires_workspace_positive_reach_and_no_version_field(
     fixture_root: Path, tmp_path: Path
 ) -> None:
     source = fixture_root / "collision_free" / "config.yaml"
     original = yaml.safe_load(source.read_text(encoding="utf-8"))
     cases = []
-    old_schema = dict(original)
-    old_schema["schema_version"] = "1.0"
-    cases.append(old_schema)
+    versioned_config = dict(original)
+    versioned_config["schema_version"] = "1.1"
+    cases.append(versioned_config)
     no_workspace = dict(original)
     no_workspace.pop("workspace")
     cases.append(no_workspace)
@@ -55,7 +55,7 @@ def test_config_11_requires_workspace_and_positive_reach(
         with pytest.raises(InputValidationError) as caught:
             load_config(path)
         assert caught.value.code == "INVALID_CONFIG_SCHEMA"
-    assert "reach_radius_mm" in str(
+    assert "schema_version is not a Config field" in str(
         pytest.raises(InputValidationError, load_config, tmp_path / "invalid-0.yaml").value
     )
 
@@ -88,6 +88,7 @@ def test_reach_violation_is_normal_fail_and_is_written(fixture_root: Path, tmp_p
     assert any(reason.startswith("ROBOT_REACH: R1") for reason in result.failure_reasons)
     summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["schema_version"] == "1.1"
+    assert summary["validator_version"] == "1.0"
     assert summary["reach"]["passed"] is False
     robot_csv = (result.output_dir / "robot_metrics.csv").read_text(encoding="utf-8")
     assert "reach_violation_point_count" in robot_csv

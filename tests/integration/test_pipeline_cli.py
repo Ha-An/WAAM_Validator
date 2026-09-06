@@ -193,3 +193,4 @@ def test_fatal_input_writes_error_json(fixture_root: Path, tmp_path: Path) -> No
     payload = json.loads(error_path.read_text(encoding="utf-8"))
     assert payload["status"] == "ERROR"
     assert payload["code"] == "MISSING_TARGET"
+    assert payload["validator_version"] == "1.0"

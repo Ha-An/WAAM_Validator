@@ -44,7 +44,7 @@ Windows에서는 `찾아보기`를 사용하거나 경로를 직접 붙여 넣�
 preview를 만듭니다.
 
 - 파일 절대 경로, 크기, 수정 시각
-- Config schema와 로봇·공정·workspace·threshold
+- Config 필드·타입과 로봇·공정·workspace·threshold
 - Trajectory 전체 행 수, makespan, 로봇별 시간·XYZ 범위, D/T/W 시간·거리·속도
 - Target의 정점·면·body 수, 경계·치수·체적·watertight 상태
 - Trajectory 의미, Reach 예상 위반, Target/trajectory 좌표 일관성
@@ -59,7 +59,7 @@ preview를 만듭니다.
 | `READY` | 검사 항목에 문제가 없음 | 활성화 |
 | `WARNING` | 비치명 이슈가 있으나 실행 가능 | 활성화 |
 | `EXPECTED_FAIL` | Reach·Wait·설정된 속도 기준 등 정상 FAIL 예상 | 활성화 |
-| `BLOCKED` | 파싱·schema·좌표·D layer 등 치명 오류 | 비활성화 |
+| `BLOCKED` | 파싱·Config·좌표·Deposition layer 등 치명 오류 | 비활성화 |
 
 `EXPECTED_FAIL`은 실행 오류가 아닙니다. 전체 계산과 결과 저장이 가능하지만 최종
 상태가 FAIL일 가능성이 있다는 의미입니다.
@@ -74,6 +74,7 @@ preview를 만듭니다.
 
 - Target STL
 - Robot Base와 Base XY 삼각형
+- 설정한 경우, Base와 구분되는 명목 Home TCP 위치
 - 각 Base 중심의 반투명 3D Reach 구
 - World XY의 원형 workspace
 - 로봇별 Deposition, Travel, Wait trajectory
@@ -104,15 +105,16 @@ R1/R2/R3을 각각 하나의 가로 막대로 표시하고, 원본 interval에�
 
 #### 로봇별 상태 시간 비율
 
-공통 makespan을 100%로 놓고 각 로봇의 D/T/W 시간을 표시합니다. 각 로봇이
-makespan보다 먼저 끝났다면 남은 부분은 Wait가 아니라 `완료 후 비활성`입니다.
+공통 makespan을 100%로 놓고 각 로봇의 Deposition/Travel/Wait 시간을 표시합니다.
+각 로봇이 makespan보다 먼저 끝났다면 남은 부분은 Wait가 아니라
+`완료 후 비활성`입니다.
 그래프에 기준 makespan의 초·분·시간 환산값을 함께 표시합니다.
 
 #### 로봇별 경로 길이
 
-D와 T interval의 3D 누적 TCP 거리입니다. 시간이 짧은 Travel이라도 설정 속도가
-Deposition보다 크면 Travel 거리가 더 길 수 있습니다. 정확한 값은 trajectory 정보와
-hover에서 확인합니다.
+Deposition과 Travel interval의 3D 누적 TCP 거리입니다. 시간이 짧은 Travel이라도
+설정 속도가 Deposition보다 크면 Travel 거리가 더 길 수 있습니다. 정확한 값은
+trajectory 정보와 hover에서 확인합니다.
 
 #### 로봇별 Reach 사용률
 
@@ -158,7 +160,7 @@ Failure Reasons와 구분해 읽어야 합니다.
 
 ### 로봇 · Reach
 
-로봇별 completion, D/T/W 시간·비율, 적층·이동 거리, 평균 속도와 Reach 반경,
+로봇별 completion, Deposition/Travel/Wait 시간·비율, 적층·이동 거리, 평균 속도와 Reach 반경,
 최대 사용 거리, margin, 사용률, 위반 절점 수를 확인합니다.
 
 ### 충돌
@@ -194,7 +196,7 @@ ARM_CROSS와 TCP_RADIUS event의 robot pair, 시작·종료·지속 시간과 �
 
 - `같은 입력 다시 실행`: 세 입력 signature를 다시 확인한 후 새 output 폴더에서 실행
 - `다른 입력 선택`: 입력 준비 화면으로 돌아가 새 폴더 지정
-- `최근 결과 보기`: 현재 입력 signature와 schema가 일치하는 완료 결과가 있을 때만 표시
+- `최근 결과 보기`: 현재 입력 signature와 지원하는 결과 schema가 일치하는 완료 결과가 있을 때만 표시
 
 기존 결과 폴더는 자동 삭제하거나 덮어쓰지 않습니다.
 

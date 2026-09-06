@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .._version import __version__
 from ..config.models import Config
 from ..constants import LIMITATIONS_TEXT
 from ..errors import OutputWriteError, ValidationIssue, WaamValidatorError
@@ -225,8 +226,8 @@ def _write_warnings(path: Path, issues: list[ValidationIssue]) -> None:
 def _render_markdown(result: ValidationResult) -> str:
     robot_lines = "\n".join(
         f"- R{item.robot_id}: completion {item.completion_s:.2f} s; "
-        f"D {item.deposition_time_s:.2f} s; T {item.travel_time_s:.2f} s; "
-        f"W {item.wait_time_s:.2f} s"
+        f"Deposition {item.deposition_time_s:.2f} s; "
+        f"Travel {item.travel_time_s:.2f} s; Wait {item.wait_time_s:.2f} s"
         for item in result.schedule.robots
     )
     reach_lines = "\n".join(
@@ -249,6 +250,8 @@ def _render_markdown(result: ValidationResult) -> str:
 ## Overall Result
 
 **{result.status}**
+
+- WAAM Validator version: {__version__}
 
 ## Input Summary
 
@@ -306,6 +309,7 @@ def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Pat
     """Best-effort minimal fatal error artifact."""
     payload = {
         "schema_version": "1.1",
+        "validator_version": __version__,
         "status": "ERROR",
         "code": error.code,
         "message": error.message,

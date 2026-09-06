@@ -11,8 +11,9 @@ Python 3.11+ 도구입니다. 동일한 World 좌표계에 놓인 `config.yaml`,
   Overfill, IoU
 - 보고서, JSON/CSV, PNG, 적층 형상 STL과 선택적 3D Replay
 
-CLI, Python API, 단일 작업용 로컬 웹 UI를 제공합니다. 현재 패키지 버전은
-`2.0.0`, 입력·결과 schema는 `1.1`입니다.
+CLI, Python API, 단일 작업용 로컬 웹 UI를 제공합니다. 현재 WAAM Validator
+애플리케이션 버전은 `1.0`입니다. Config에는 별도 버전 필드를 두지 않으며,
+결과 파일 형식의 `schema_version`은 애플리케이션 버전과 독립적입니다.
 
 > 이 Validator는 로봇을 Base–TCP 직선으로 단순화한 **계획 검증기**입니다.
 > 실제 관절·링크, 환경물, 열변형과 용융풀 물리는 계산하지 않습니다.
@@ -70,7 +71,7 @@ waam-validator check .\my_job
 waam-validator run .\my_job
 ```
 
-`check`는 파일·schema·trajectory 의미와 Target 좌표 일관성을 검사하지만 충돌,
+`check`는 파일·Config/CSV 구조·trajectory 의미와 Target 좌표 일관성을 검사하지만 충돌,
 layer slicing, 형상 비교와 산출물 생성은 수행하지 않습니다. `run`은 전체
 Validation을 수행하며 결과를 기본적으로 아래 새 폴더에 보존합니다.
 
@@ -96,6 +97,10 @@ waam-validator ui C:\path\to\my_job
 
 Replay는 기본 생성하지 않습니다. Validation이 끝난 뒤 `산출물` 탭에서 frame
 간격과 예상 시간·용량을 확인하고 필요할 때만 생성할 수 있습니다.
+
+입력 화면의 3D 장면에서는 로봇의 고정 설치점인 **Base**와 TCP의 선택적 명목
+대기점인 **Home**을 서로 다른 표식으로 보여줍니다. Reach와 Base–TCP 충돌 선분은
+항상 Base를 기준으로 계산하며 Home이 Base를 대신하지 않습니다.
 
 ## 자주 쓰는 명령
 
@@ -137,6 +142,19 @@ waam-validator ui .\my_job --port 8051 --no-browser
 각 지표의 분모와 해석, 전체 필드 목록은 [결과 및 산출물 참조](docs/results-reference.md)에
 정리되어 있습니다.
 
+## 포함된 검증 자료
+
+- `tests/fixtures/`: 충돌 없음, 팔 교차, TCP 안전 반경, 시간 분리 교차,
+  underfill·overfill을 의도한 작은 회귀 fixture
+- `tests/01`–`tests/10`: raster, 원형 벽, 동심 벽, 별형, 격자, 곡선 벽 등 서로
+  다른 절차적 모델과 3대 로봇 heuristic trajectory
+- `scripts/generate_benchmark_jobs.py`: 루트 `config.yaml`을 기준으로 10개 입력을
+  결정론적으로 다시 생성하는 스크립트
+- `tests/benchmark_results.md`: WAAM Validator 1.0으로 다시 측정한 결과와 해석 범위
+
+각 작업의 `output/`은 실행할 때 다시 생성되는 산출물이므로 Git에서 제외합니다.
+저장소에는 재현에 필요한 입력 세 파일과 결과 요약 문서만 보관합니다.
+
 ## 문서
 
 | 문서 | 내용 |
@@ -144,12 +162,14 @@ waam-validator ui .\my_job --port 8051 --no-browser
 | [문서 안내](docs/README.md) | 목적별 문서 찾기 |
 | [설치 및 시작하기](docs/getting-started.md) | 환경 구성, 첫 실행, CLI 사용 패턴 |
 | [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md) | 알고리즘이 생성해야 할 세 입력 파일의 상세 계약 |
-| [Config 참조](docs/config-reference.md) | schema 1.1의 모든 설정 필드와 제약 |
+| [Config 참조](docs/config-reference.md) | 모든 설정 필드의 의미, 단위와 제약 |
 | [검증 방법과 판정 기준](docs/validation-method.md) | 시간, Reach, 충돌, 적층·형상 알고리즘과 한계 |
 | [UI 사용 안내](docs/ui-guide.md) | 입력 준비부터 결과·Replay 확인까지의 화면 흐름 |
 | [결과 및 산출물 참조](docs/results-reference.md) | JSON/CSV/보고서, 종료 코드와 결과 해석 |
 | [Python API](docs/python-api.md) | 공개 함수, 주요 데이터 타입과 진행 콜백 |
 | [개발자 안내](docs/development.md) | 코드 구조, 테스트, 정적 검사와 기여 시 주의사항 |
+| [버전 및 호환성](docs/versioning.md) | 애플리케이션 버전, Config와 결과 schema의 관리 기준 |
+| [10개 모델 benchmark 결과](tests/benchmark_results.md) | 절차적 모델·trajectory 생성 방식과 실제 Validation 결과 |
 
 ## 설계 원칙
 

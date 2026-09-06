@@ -31,11 +31,14 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 
 ## `summary.json`
 
-자동화가 가장 먼저 읽어야 하는 고정 schema의 핵심 결과입니다.
+자동화가 가장 먼저 읽어야 하는 고정 schema의 핵심 결과입니다. 여기의
+`schema_version`은 **결과 파일 형식의 버전**이며 Config나 WAAM Validator
+애플리케이션 버전이 아닙니다. `config.yaml`에는 버전 필드가 없습니다.
 
 ```json
 {
   "schema_version": "1.1",
+  "validator_version": "1.0",
   "status": "PASS",
   "input": {},
   "schedule": {},
@@ -48,6 +51,12 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
   "output_directory": "..."
 }
 ```
+
+| 최상위 필드 | 의미 |
+| --- | --- |
+| `schema_version` | `summary.json` 결과 형식 버전 |
+| `validator_version` | 결과를 생성한 WAAM Validator 애플리케이션 버전 |
+| `status` | 최종 `PASS`, `FAIL` 또는 `ERROR` 상태 |
 
 ### `input`
 
@@ -125,7 +134,7 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 | `completion_s` | 마지막 timestamp |
 | `deposition_time_s`, `travel_time_s`, `wait_time_s` | 원본 interval mode별 누적 시간 |
 | `deposition_ratio`, `travel_ratio`, `wait_ratio` | 각 누적 시간 / 해당 로봇 completion |
-| `deposition_length_mm`, `travel_length_mm` | D/T interval의 3D 누적 길이 |
+| `deposition_length_mm`, `travel_length_mm` | Deposition/Travel interval의 3D 누적 길이 |
 | `mean_deposition_speed_mm_s`, `mean_travel_speed_mm_s` | 거리 / 해당 mode 시간; 시간이 0이면 빈 값 |
 | `reach_radius_mm` | 설정 Reach 반경 |
 | `maximum_reach_mm` | 최대 Base–TCP 3D 거리 |
@@ -187,7 +196,7 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 | `robot_id` | 해당 시 로봇 ID |
 | `start_s`, `end_s` | 해당 시 interval 또는 위반 시간 범위 |
 
-여기서 `error` severity는 반드시 프로세스가 중단됐다는 뜻이 아닙니다. W 이동,
+여기서 `error` severity는 반드시 프로세스가 중단됐다는 뜻이 아닙니다. Wait 이동,
 Reach, 설정에 따라 치명적인 속도 위반처럼 **전체 계산이 가능한 정상 FAIL 이슈**도
 이 파일에 기록됩니다. 실행 중단 오류는 `error.json`과 종료 코드로 구분합니다.
 
@@ -200,7 +209,8 @@ Reach, 설정에 따라 치명적인 속도 위반처럼 **전체 계산이 가�
 
 ### `run.log`
 
-입력 로딩, trajectory 행 수, Target 면 수, makespan, 각 로봇 D/T/W 시간·거리·속도,
+입력 로딩, trajectory 행 수, Target 면 수, makespan, 각 로봇의
+Deposition/Travel/Wait 시간·거리·속도,
 Reach 사용량, 충돌 sample/event 수, layer 범위, 형상 지표와 최종 판정 근거를 시간
 순서로 기록합니다. 결과값이 예상과 다르면 가장 먼저 확인할 진단 파일입니다.
 
@@ -238,6 +248,7 @@ UI에서 시작한 run에는 다음 내부 상태 파일이 있을 수 있습니
 ```json
 {
   "schema_version": "1.1",
+  "validator_version": "1.0",
   "status": "ERROR",
   "code": "...",
   "message": "...",
@@ -254,7 +265,7 @@ UI에서 시작한 run에는 다음 내부 상태 파일이 있을 수 있습니
 | --- | --- | --- |
 | `0` | PASS | 활성 기준 모두 통과 |
 | `1` | 정상 FAIL | Reach, 충돌, 형상 또는 process 기준 위반 |
-| `2` | 입력 오류 | 누락 파일, Config/CSV schema, D layer/workspace 오류 |
+| `2` | 입력 오류 | 누락 파일, Config/CSV 필드, Deposition layer/workspace 오류 |
 | `3` | Target 오류 | STL 로딩·유효성·좌표 문제 |
 | `4` | 계산 오류 | polygon/numerical/internal calculation 실패 |
 | `5` | 출력 오류 | 비어 있지 않은 explicit output, 쓰기 실패 |

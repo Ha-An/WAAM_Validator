@@ -10,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 from shapely.geometry.base import BaseGeometry
 
+from ._version import __version__
 from .errors import ValidationIssue
 
 
@@ -207,6 +208,7 @@ class ValidationResult:
         completions = {str(item.robot_id): item.completion_s for item in self.schedule.robots}
         return {
             "schema_version": "1.1",
+            "validator_version": __version__,
             "status": self.status,
             "input": {
                 "directory": str(self.input_dir),

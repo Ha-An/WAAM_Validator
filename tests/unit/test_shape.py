@@ -12,7 +12,7 @@ from waam_validator.config.loader import load_config
 from waam_validator.errors import ValidationMessages
 from waam_validator.shape.deposition import build_deposited_layers
 from waam_validator.shape.layer_index import determine_layer_index
-from waam_validator.shape.metrics import compute_shape_metrics
+from waam_validator.shape.metrics import _unit_interval, compute_shape_metrics
 from waam_validator.shape.polygon_utils import polygon_components
 from waam_validator.shape.target import (
     determine_evaluation_layers,
@@ -64,6 +64,12 @@ def test_target_slice_and_exact_metrics(fixture_root: Path) -> None:
     assert metrics.overfill_ratio == pytest.approx(0.0, abs=2e-4)
     assert metrics.iou == pytest.approx(1.0, abs=2e-4)
     assert metrics.passed
+
+
+def test_mathematically_bounded_shape_ratios_are_clamped() -> None:
+    assert _unit_interval(-1.0e-12) == 0.0
+    assert _unit_interval(0.25) == 0.25
+    assert _unit_interval(1.0 + 1.0e-12) == 1.0
 
 
 @pytest.mark.parametrize(

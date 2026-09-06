@@ -1,4 +1,4 @@
-"""Single-job WAAM Validator 2.0 local web interface."""
+"""Single-job WAAM Validator local web interface."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_upda
 from dash.exceptions import PreventUpdate
 from flask import abort, send_file
 
+from .._version import __version__
 from .app import (
     _collision_gauge,
     _collision_timeline,
@@ -119,7 +120,10 @@ def _layout(initial_job_dir: Path) -> html.Div:
                 [
                     html.Div("WV", className="brand-mark"),
                     html.Div(
-                        [html.H1("WAAM Validator"), html.P("단일 WAAM 작업 검증")],
+                        [
+                            html.H1("WAAM Validator"),
+                            html.P(f"v{__version__} · 단일 WAAM 작업 검증"),
+                        ],
                         className="brand-copy",
                     ),
                     html.Div(

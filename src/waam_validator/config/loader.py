@@ -24,13 +24,11 @@ def load_config(path: Path) -> Config:
         raise InputValidationError(
             "INVALID_CONFIG_SCHEMA", "config.yaml must contain one mapping object."
         )
-    if data.get("schema_version") != "1.1":
+    if "schema_version" in data:
         raise InputValidationError(
             "INVALID_CONFIG_SCHEMA",
-            "WAAM Validator 2.0 accepts only schema_version: '1.1'. "
-            "Add a positive reach_radius_mm to every robots[] entry and the required "
-            "workspace block, for example: workspace: {shape: circle_xy, "
-            "center_xy_mm: [0.0, 0.0], radius_mm: 500.0}.",
+            "schema_version is not a Config field. Remove it; WAAM Validator versions "
+            "the application independently from config.yaml.",
         )
     try:
         return Config.model_validate(data)

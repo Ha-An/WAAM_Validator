@@ -91,7 +91,7 @@ deposited_layers = build_deposited_layers(trajectories, config)
 ```
 
 `validate_trajectory_set()`은 warning과 실행 가능한 process error를
-`ValidationMessages`로 반환합니다. D layer/workspace처럼 계속 계산할 수 없는 문제는
+`ValidationMessages`로 반환합니다. Deposition layer/workspace처럼 계속 계산할 수 없는 문제는
 `InputValidationError`를 발생시킵니다. 단계별 API를 직접 조합할 때는 반환 메시지를
 무시하지 말아야 합니다.
 
@@ -145,7 +145,7 @@ except WaamValidatorError as exc:
 
 | 예외 | `exit_code` | 범주 |
 | --- | --- | --- |
-| `InputValidationError` | 2 | 입력 파일·schema·trajectory 문제 |
+| `InputValidationError` | 2 | 입력 파일·Config/CSV 구조·trajectory 문제 |
 | `TargetValidationError` | 3 | Target mesh 문제 |
 | `ComputationError` | 4 | 수치·기하 계산 문제 |
 | `OutputWriteError` | 5 | output 경로·파일 쓰기 문제 |
@@ -161,7 +161,9 @@ import waam_validator
 print(waam_validator.__version__)
 ```
 
-공개 API 또는 schema에 호환성이 깨지는 변경을 할 때는 package version과 문서를
-함께 갱신하십시오.
+애플리케이션 버전은 `waam_validator._version` 한 곳에서 관리되고 빌드 metadata와
+`waam_validator.__version__`이 같은 값을 사용합니다. Config에는 별도 버전 필드가
+없습니다. 공개 API나 동작에 호환성이 깨지는 변경을 할 때는 애플리케이션 버전과
+문서를 함께 갱신하십시오.
 
 [문서 안내로 돌아가기](README.md)

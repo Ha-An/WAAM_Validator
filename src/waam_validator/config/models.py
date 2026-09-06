@@ -14,7 +14,12 @@ class FrozenModel(BaseModel):
 
 class RobotConfig(FrozenModel):
     id: Literal[1, 2, 3]
+    # Fixed robot installation origin in World coordinates. Reach and the
+    # simplified Base-to-TCP arm segment are always measured from this point.
     base_xyz_mm: tuple[float, float, float]
+    # Optional nominal TCP standby position. It is metadata for generators and
+    # UI visualization; it never replaces the fixed robot base.
+    home_xyz_mm: tuple[float, float, float] | None = None
     tcp_radius_mm: float = Field(gt=0)
     reach_radius_mm: float = Field(gt=0)
 
@@ -33,6 +38,11 @@ class ProcessConfig(FrozenModel):
     bead_width_mm: float = Field(gt=0)
     build_plane_z_mm: float
     tcp_z_reference: Literal["top", "center"]
+    # Optional NCO scheduling parameters retained in the shared config. They
+    # do not change Validator trajectory semantics by themselves.
+    safe_travel_z_mm: float | None = None
+    arc_on_time_s: float | None = Field(default=None, ge=0)
+    arc_off_time_s: float | None = Field(default=None, ge=0)
 
 
 class WorkspaceConfig(FrozenModel):
@@ -79,12 +89,10 @@ class OutputConfig(FrozenModel):
     save_layer_metrics_csv: bool
     save_deposited_stl: bool
     save_static_plots: bool
-    save_interactive_html: bool = False
     animation_sample_interval_s: float = Field(gt=0)
 
 
 class Config(FrozenModel):
-    schema_version: Literal["1.1"]
     simulation: SimulationConfig
     robots: tuple[RobotConfig, RobotConfig, RobotConfig]
     process: ProcessConfig
