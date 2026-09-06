@@ -202,7 +202,7 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 | `shape_validation` | coverage, overfill, IoU 및 실패 layer 기준 |
 | `output` | JSON, CSV, STL, PNG, HTML 결과 저장 설정 |
 
-전체 예제는 [`examples/sample_job/config.yaml`](examples/sample_job/config.yaml)을 기준으로 삼는다.
+전체 예제는 [`examples/sample_job/config.yaml`](../examples/sample_job/config.yaml)을 기준으로 삼는다.
 
 `workspace`는 다음 형식을 사용한다. `center_xy_mm`는 World 좌표이고
 `radius_mm`는 원의 반경이다. 원 전체는 세 robot base의 XY 좌표가 이루는 삼각형
@@ -373,6 +373,6 @@ waam-validator run .\validation_job --headless --json
 
 참고 파일:
 
-- [`examples/sample_job/config.yaml`](examples/sample_job/config.yaml)
-- [`examples/sample_job/trajectory.csv`](examples/sample_job/trajectory.csv)
+- [`examples/sample_job/config.yaml`](../examples/sample_job/config.yaml)
+- [`examples/sample_job/trajectory.csv`](../examples/sample_job/trajectory.csv)
 - [`README.md`](README.md)

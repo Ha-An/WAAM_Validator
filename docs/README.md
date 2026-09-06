@@ -8,7 +8,7 @@
 | 알고 싶은 내용 | 문서 |
 | --- | --- |
 | 설치하고 예제 또는 실제 작업을 처음 실행하는 방법 | [설치 및 시작하기](getting-started.md) |
-| 알고리즘 결과를 Validator 입력으로 만드는 정확한 규격 | [입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md) |
+| 알고리즘 결과를 Validator 입력으로 만드는 정확한 규격 | [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md) |
 | `config.yaml`의 필드와 유효 범위 | [Config 참조](config-reference.md) |
 | PASS/FAIL이 어떤 계산을 거쳐 결정되는지 | [검증 방법과 판정 기준](validation-method.md) |
 | 로컬 UI에서 입력 확인, 실행, 결과와 Replay를 보는 방법 | [UI 사용 안내](ui-guide.md) |

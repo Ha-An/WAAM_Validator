@@ -64,7 +64,7 @@ my_job/
 
 샘플 설정은 [examples/sample_job/config.yaml](../examples/sample_job/config.yaml)을
 복사해 작업 조건에 맞게 수정할 수 있습니다. 입력 파일을 생성하는 프로그램은
-[입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md)의 정렬, 단위, mode,
+[입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md)의 정렬, 단위, mode,
 시간 경계 조건을 따라야 합니다.
 
 ## 첫 실행

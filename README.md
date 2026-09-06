@@ -62,7 +62,7 @@ robot_id,time_s,x_mm,y_mm,z_mm,mode
 | `T` | Travel | 비적층 이동 시간과 이동 거리 |
 | `W` | Wait | 대기 시간, 허용 오차 내 정지 |
 
-전체 입력 계약은 [WAAM Validator 입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md),
+전체 입력 계약은 [WAAM Validator 입력물 인터페이스](docs/WAAM_Validator_입력물_인터페이스.md),
 모든 설정 필드는 [Config 참조](docs/config-reference.md)를 확인하십시오.
 
 ### 3. 입력 검사와 Validation
@@ -176,7 +176,7 @@ TCP Radius event는 0건이고 형상 비교는 PASS입니다. 10만 행 성능 
 | --- | --- |
 | [문서 안내](docs/README.md) | 목적별 문서 찾기 |
 | [설치 및 시작하기](docs/getting-started.md) | 환경 구성, 첫 실행, CLI 사용 패턴 |
-| [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md) | 알고리즘이 생성해야 할 세 입력 파일의 상세 계약 |
+| [입력물 인터페이스](docs/WAAM_Validator_입력물_인터페이스.md) | 알고리즘이 생성해야 할 세 입력 파일의 상세 계약 |
 | [Config 참조](docs/config-reference.md) | 모든 설정 필드의 의미, 단위와 제약 |
 | [검증 방법과 판정 기준](docs/validation-method.md) | 시간, Reach, 충돌, 적층·형상 알고리즘과 한계 |
 | [UI 사용 안내](docs/ui-guide.md) | 입력 준비부터 결과·Replay 확인까지의 화면 흐름 |

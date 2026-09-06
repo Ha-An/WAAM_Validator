@@ -156,6 +156,6 @@ Worker가 강제 종료되면 `dashboard_status.json`만 있는 미완성 output
 - [결과 및 산출물 참조](results-reference.md)
 - [버전 및 호환성](versioning.md)
 - [릴리스 준비 및 검증 기록](release-readiness.md)
-- [입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md)
+- [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md)
 
 [문서 안내로 돌아가기](README.md)
