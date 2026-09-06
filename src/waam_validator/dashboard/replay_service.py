@@ -116,22 +116,45 @@ def input_signature(job_dir: Path) -> dict[str, dict[str, int]]:
 def write_validation_input_manifest(job_dir: Path, run_dir: Path) -> None:
     write_json_atomic(
         run_dir / VALIDATION_INPUT_MANIFEST,
-        {"schema_version": "1.1", "inputs": input_signature(job_dir)},
+        {"schema_version": "2.0", "inputs": input_signature(job_dir)},
     )
 
 
 def verify_validation_inputs(job_dir: Path, run_dir: Path) -> tuple[bool, str]:
-    """Reject replay generation when dashboard-validated inputs have since changed."""
+    """Check whether a completed schema 2.0 run still represents the current inputs."""
     path = run_dir / VALIDATION_INPUT_MANIFEST
     if not path.is_file():
-        return False, "기존 결과에는 입력 지문이 없어 현재 입력과 일치하는지 확인할 수 없습니다."
+        summary_path = run_dir / "summary.json"
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            schema_matches = (
+                isinstance(summary, dict) and summary.get("schema_version") == "2.0"
+            )
+            recorded_dir = Path(str((summary.get("input") or {}).get("directory", "")))
+            directory_matches = recorded_dir.expanduser().resolve() == job_dir.resolve()
+            newest_input = max(
+                (job_dir / filename).stat().st_mtime_ns
+                for filename in ("config.yaml", "trajectory.csv", "target.stl")
+            )
+            result_is_newer = summary_path.stat().st_mtime_ns >= newest_input
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return (
+                False,
+                "기존 결과에는 입력 지문이 없어 현재 입력과 일치하는지 확인할 수 없습니다.",
+            )
+        if not (schema_matches and directory_matches and result_is_newer):
+            return False, "검증 이후 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
+        return (
+            True,
+            "입력 지문 도입 전 생성된 결과이므로 입력 경로와 파일 수정 시각으로 확인했습니다.",
+        )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         recorded = payload.get("inputs") if isinstance(payload, dict) else None
         current = input_signature(job_dir)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return False, f"입력 지문을 확인할 수 없습니다: {exc}"
-    if payload.get("schema_version") != "1.1" or recorded != current:
+    if payload.get("schema_version") != "2.0" or recorded != current:
         return False, "검증 이후 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
     return True, ""
 

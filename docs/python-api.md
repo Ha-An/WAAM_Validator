@@ -116,6 +116,12 @@ deposited_layers = build_deposited_layers(trajectories, config)
 `run_collision_simulation`은 선택적인 단계 진행 callback도 받습니다. 이 callback의
 형태는 `(fraction, completed, total)`입니다.
 
+충돌 결과의 Arm event 유형은 `ARM_ENVELOPE`입니다. 전체 결과의
+`CollisionSimulationResult`는 event 외에도 최소 Arm safety margin, 그때의 중심선
+거리·요구 거리·pair·시각·closest points·세 TCP XY 위치와 최소 TCP 거리를 보존합니다.
+낮은 수준의 `check_arm_envelope_xy()`와 batch 함수는 Base–TCP 유한 선분, 각 Robot의
+Capsule 반경, 공통 안전거리와 접촉 정책을 받아 같은 판정 수식을 사용합니다.
+
 ## Runtime 데이터 타입
 
 Trajectory는 대형 CSV의 메모리 사용량을 줄이기 위해 다음 dtype을 사용합니다.

@@ -39,17 +39,23 @@ class SimulationSample:
 
 
 @dataclass(slots=True, frozen=True)
-class SegmentIntersectionResult:
-    intersects: bool
-    x_mm: float | None = None
-    y_mm: float | None = None
-
-
-@dataclass(slots=True, frozen=True)
 class TcpRadiusResult:
     collision: bool
     distance_mm: float
     required_distance_mm: float
+
+
+@dataclass(slots=True, frozen=True)
+class ArmEnvelopeResult:
+    collision: bool
+    centerline_distance_mm: float
+    required_distance_mm: float
+    safety_margin_mm: float
+    capsule_surface_clearance_mm: float
+    closest_a_x_mm: float
+    closest_a_y_mm: float
+    closest_b_x_mm: float
+    closest_b_y_mm: float
 
 
 @dataclass(slots=True)
@@ -61,26 +67,40 @@ class CollisionEvent:
     start_s: float
     end_s: float
     duration_s: float
-    min_tcp_distance_mm: float | None = None
-    required_tcp_distance_mm: float | None = None
-    crossing_x_mm: float | None = None
-    crossing_y_mm: float | None = None
-    min_distance_time_s: float | None = None
-    marker_x_mm: float | None = None
-    marker_y_mm: float | None = None
+    minimum_distance_mm: float
+    required_distance_mm: float
+    minimum_safety_margin_mm: float
+    minimum_capsule_surface_clearance_mm: float | None
+    minimum_distance_time_s: float
+    closest_a_x_mm: float
+    closest_a_y_mm: float
+    closest_b_x_mm: float
+    closest_b_y_mm: float
 
 
 @dataclass(slots=True)
 class CollisionSimulationResult:
     events: list[CollisionEvent]
+    minimum_arm_safety_margin_mm: float
+    arm_centerline_distance_at_worst_mm: float
+    arm_required_distance_at_worst_mm: float
+    arm_capsule_surface_clearance_at_worst_mm: float
+    minimum_arm_pair: tuple[int, int]
+    minimum_arm_time_s: float
+    minimum_arm_closest_a_xy: tuple[float, float]
+    minimum_arm_closest_b_xy: tuple[float, float]
+    minimum_arm_tcp_positions_xy: tuple[
+        tuple[float, float], tuple[float, float], tuple[float, float]
+    ]
     minimum_tcp_distance_mm: float
     minimum_tcp_pair: tuple[int, int]
-    minimum_required_distance_mm: float
+    minimum_tcp_required_distance_mm: float
+    minimum_tcp_time_s: float
     sample_count: int
 
     @property
-    def arm_cross_event_count(self) -> int:
-        return sum(event.collision_type == "ARM_CROSS" for event in self.events)
+    def arm_envelope_event_count(self) -> int:
+        return sum(event.collision_type == "ARM_ENVELOPE" for event in self.events)
 
     @property
     def tcp_radius_event_count(self) -> int:
@@ -207,7 +227,7 @@ class ValidationResult:
     def summary_dict(self) -> dict[str, Any]:
         completions = {str(item.robot_id): item.completion_s for item in self.schedule.robots}
         return {
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "validator_version": __version__,
             "status": self.status,
             "input": {
@@ -241,12 +261,43 @@ class ValidationResult:
             "collision": {
                 "passed": self.collision_free,
                 "collision_event_count": len(self.collision.events),
-                "arm_cross_event_count": self.collision.arm_cross_event_count,
-                "tcp_radius_event_count": self.collision.tcp_radius_event_count,
-                "minimum_tcp_distance_mm": self.collision.minimum_tcp_distance_mm,
-                "minimum_tcp_pair": list(self.collision.minimum_tcp_pair),
-                "minimum_required_distance_mm": self.collision.minimum_required_distance_mm,
-                "checks_enabled": self.checks_enabled,
+                "arm_envelope": {
+                    "enabled": self.checks_enabled.get("arm_envelope", False),
+                    "passed": self.collision.arm_envelope_event_count == 0,
+                    "event_count": self.collision.arm_envelope_event_count,
+                    "minimum_safety_margin_mm": (
+                        self.collision.minimum_arm_safety_margin_mm
+                    ),
+                    "centerline_distance_at_worst_mm": (
+                        self.collision.arm_centerline_distance_at_worst_mm
+                    ),
+                    "required_distance_at_worst_mm": (
+                        self.collision.arm_required_distance_at_worst_mm
+                    ),
+                    "capsule_surface_clearance_at_worst_mm": (
+                        self.collision.arm_capsule_surface_clearance_at_worst_mm
+                    ),
+                    "pair": list(self.collision.minimum_arm_pair),
+                    "time_s": self.collision.minimum_arm_time_s,
+                    "closest_points_xy_mm": [
+                        list(self.collision.minimum_arm_closest_a_xy),
+                        list(self.collision.minimum_arm_closest_b_xy),
+                    ],
+                    "tcp_positions_xy_mm": [
+                        list(point) for point in self.collision.minimum_arm_tcp_positions_xy
+                    ],
+                },
+                "tcp_radius": {
+                    "enabled": self.checks_enabled.get("tcp_radius", False),
+                    "passed": self.collision.tcp_radius_event_count == 0,
+                    "event_count": self.collision.tcp_radius_event_count,
+                    "minimum_distance_mm": self.collision.minimum_tcp_distance_mm,
+                    "required_distance_at_minimum_mm": (
+                        self.collision.minimum_tcp_required_distance_mm
+                    ),
+                    "pair": list(self.collision.minimum_tcp_pair),
+                    "time_s": self.collision.minimum_tcp_time_s,
+                },
             },
             "shape": {
                 "passed": self.shape.passed,

@@ -103,10 +103,13 @@ def test_csv_page_filters_sorts_and_pages(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "collision_events.csv").write_text(
-        "event_id,type,robot_a,robot_b,start_s,end_s,duration_s,min_tcp_distance_mm\n"
-        "1,ARM_CROSS,1,2,5,6,1,100\n"
-        "2,TCP_RADIUS,1,2,2,3,1,90\n"
-        "3,ARM_CROSS,1,3,8,9,1,80\n",
+        "event_id,type,robot_a,robot_b,start_s,end_s,duration_s,minimum_distance_mm,"
+        "required_distance_mm,minimum_safety_margin_mm,"
+        "minimum_capsule_surface_clearance_mm,minimum_distance_time_s,"
+        "closest_a_x_mm,closest_a_y_mm,closest_b_x_mm,closest_b_y_mm\n"
+        "1,ARM_ENVELOPE,1,2,5,6,1,100,250,-150,-100,5.5,0,0,100,0\n"
+        "2,TCP_RADIUS,1,2,2,3,1,90,200,-110,,2.5,0,0,90,0\n"
+        "3,ARM_ENVELOPE,1,3,8,9,1,80,250,-170,-120,8.5,0,0,80,0\n",
         encoding="utf-8",
     )
 
@@ -116,7 +119,7 @@ def test_csv_page_filters_sorts_and_pages(tmp_path: Path) -> None:
         page=0,
         page_size=1,
         sort_by=[{"column_id": "start_s", "direction": "desc"}],
-        equals={"type": "ARM_CROSS"},
+        equals={"type": "ARM_ENVELOPE"},
     )
     assert page_count == 2
     assert rows[0]["event_id"] == 3

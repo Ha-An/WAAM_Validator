@@ -168,7 +168,7 @@ waam-validator ui C:\data\my_job --no-browser
 | 입력 확인 후 실행 버튼 비활성 | 입력이 BLOCKED인지, 검사 후 파일 크기·수정 시각이 바뀌었는지 |
 | UI가 열리지 않음 | port 사용 여부, `--port` 변경, 출력된 URL 직접 접속 |
 | `FAIL`인데 결과 파일이 있음 | 정상 동작. 계산 가능한 기준 위반은 결과를 저장하고 종료 코드 1 반환 |
-| Replay가 없음 | 기본 미생성. `--replay` 또는 UI 산출물 탭에서 별도 생성 |
+| Replay가 없음 | 기본 미생성. `--replay` 또는 UI 파일·Replay 탭에서 별도 생성 |
 | Explicit output directory 오류 | `--output` 대상이 비어 있지 않음 |
 
 [README로 돌아가기](../README.md)

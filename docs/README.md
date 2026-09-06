@@ -16,6 +16,8 @@
 | Python 코드에서 Validator를 호출하는 방법 | [Python API](python-api.md) |
 | 저장소 구조와 테스트·품질 검사를 실행하는 방법 | [개발자 안내](development.md) |
 | 애플리케이션 버전과 Config·결과 호환성의 차이 | [버전 및 호환성](versioning.md) |
+| 현재 코드의 실제 모델·성능·로그·Git 준비 상태 | [릴리스 준비 및 검증 기록](release-readiness.md) |
+| fixture·benchmark·실제 모델 폴더의 차이 | [검증 데이터 안내](../tests/README.md) |
 | 10개 절차적 모델의 입력 생성 방법과 실제 Validation 결과 | [10개 모델 benchmark 결과](../tests/benchmark_results.md) |
 
 ## 권장 읽기 순서
@@ -23,7 +25,7 @@
 - **사용자:** 시작하기 → 입력물 인터페이스 → UI 사용 안내 → 결과 참조
 - **경로 생성 알고리즘 개발자:** 입력물 인터페이스 → Config 참조 → 검증 방법
 - **자동화 개발자:** 시작하기 → 결과 참조 → Python API
-- **프로젝트 기여자:** 검증 방법 → Python API → 버전 및 호환성 → 개발자 안내
+- **프로젝트 기여자:** 검증 방법 → Python API → 개발자 안내 → 릴리스 준비 기록
 
 문서와 실제 코드가 다르게 보이면 `src/waam_validator`의 Config 모델과 테스트가 최종
 동작 기준입니다. 차이를 발견하면 README와 관련 문서도 코드 변경과 함께 갱신해야

@@ -114,6 +114,8 @@ def test_single_job_ui_inspection_enables_same_context_run(
     assert b"v1.0" in layout.data
     assert b'"debounce":false' in layout.data
     assert b'"id":"job-select"' not in layout.data
+    assert b'"id":"rerun-button"' not in layout.data
+    assert b'"id":"new-input-button"' in layout.data
     assert b'"id":"input-gantt"' in layout.data
     assert layout.data.count(b'"disabled":true') >= 3
     assert app.config.update_title is None
@@ -132,11 +134,32 @@ def test_single_job_ui_inspection_enables_same_context_run(
     assert active["context_id"]
     assert recent == {}
 
+    browser_state = _post_callback(
+        app,
+        client,
+        "validation-button.disabled",
+        inputs=[
+            {"id": "active-input-store", "property": "data", "value": active},
+            {"id": "recent-run-store", "property": "data", "value": recent},
+            {"id": "job-dir-input", "property": "value", "value": str(job)},
+            {"id": "selected-job-dir-store", "property": "data", "value": str(job)},
+            {"id": "runtime-store", "property": "data", "value": {}},
+        ],
+        state=[],
+        changed="active-input-store.data",
+    )
+    assert browser_state.status_code == 200
+    browser_buttons = browser_state.get_json()["response"]
+    assert browser_buttons["validation-button"]["disabled"] is False
+
     button_state = _callback(app, "validation-button.disabled")
-    disabled, message, recent_disabled = button_state(active, recent, None, str(job), {})
+    disabled, message, recent_disabled, recent_message = button_state(
+        active, recent, None, str(job), {}
+    )
     assert disabled is False
     assert "준비 완료" in message
     assert recent_disabled is True
+    assert "결과가 없습니다" in recent_message
 
     response = _post_callback(
         app,
@@ -144,7 +167,6 @@ def test_single_job_ui_inspection_enables_same_context_run(
         "runtime-store.data",
         inputs=[
             {"id": "validation-button", "property": "n_clicks", "value": 1},
-            {"id": "rerun-button", "property": "n_clicks", "value": None},
             {"id": "validation-poller", "property": "n_intervals", "value": 0},
         ],
         state=[{"id": "active-input-store", "property": "data", "value": active}],
@@ -161,7 +183,7 @@ def test_single_job_ui_inspection_enables_same_context_run(
     output = job / "output" / "stub-running"
     output.mkdir(parents=True)
     (output / "summary.json").write_text(
-        json.dumps({"schema_version": "1.1", "status": "PASS"}), encoding="utf-8"
+        json.dumps({"schema_version": "2.0", "status": "PASS"}), encoding="utf-8"
     )
     manager.finish(output)
     finished = _post_callback(
@@ -170,7 +192,6 @@ def test_single_job_ui_inspection_enables_same_context_run(
         "runtime-store.data",
         inputs=[
             {"id": "validation-button", "property": "n_clicks", "value": 1},
-            {"id": "rerun-button", "property": "n_clicks", "value": None},
             {"id": "validation-poller", "property": "n_intervals", "value": 1},
         ],
         state=[{"id": "active-input-store", "property": "data", "value": active}],
@@ -179,16 +200,17 @@ def test_single_job_ui_inspection_enables_same_context_run(
     assert finished["validation-poller"]["disabled"] is True
     assert finished["view-store"]["data"]["view"] == "result"
     assert finished["current-run-store"]["data"]["output_dir"] == str(output.resolve())
+    assert finished["recent-run-store"]["data"]["output_dir"] == str(output.resolve())
     assert finished["overall-progress"]["value"] == 100.0
 
 
-def test_recent_result_requires_matching_11_signature(fixture_root: Path, tmp_path: Path) -> None:
+def test_recent_result_requires_matching_20_signature(fixture_root: Path, tmp_path: Path) -> None:
     job = tmp_path / "motor"
     shutil.copytree(fixture_root / "collision_free", job)
     run = job / "output" / "2026-09-05_120000"
     run.mkdir(parents=True)
     (run / "summary.json").write_text(
-        json.dumps({"schema_version": "1.1", "status": "PASS"}), encoding="utf-8"
+        json.dumps({"schema_version": "2.0", "status": "PASS"}), encoding="utf-8"
     )
     write_validation_input_manifest(job, run)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import trimesh
+from plotly.subplots import make_subplots
 
 from ..config.models import Config
 from ..constants import MODE_D
@@ -20,6 +21,13 @@ from ..trajectory.interpolation import interpolate_all_states
 
 _COLORS = ("#2f8fff", "#ff9d42", "#34d399")
 _MAX_REPLAY_FRAMES = 2_000
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    return (
+        f"rgba({int(hex_color[1:3], 16)},{int(hex_color[3:5], 16)},"
+        f"{int(hex_color[5:7], 16)},{alpha})"
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -130,13 +138,44 @@ def _circle(center: Sequence[float], radius: float) -> tuple[list[float], list[f
 
 
 def _active_colors(time_s: float, events: Sequence[CollisionEvent]) -> list[str]:
-    active = {
-        robot_id
-        for event in events
-        if event.start_s <= time_s <= event.end_s
-        for robot_id in (event.robot_a, event.robot_b)
-    }
-    return ["#ff4057" if robot_id in active else _COLORS[robot_id - 1] for robot_id in (1, 2, 3)]
+    arm_active: set[int] = set()
+    tcp_active: set[int] = set()
+    for event in events:
+        if not event.start_s <= time_s <= event.end_s:
+            continue
+        target = arm_active if event.collision_type == "ARM_ENVELOPE" else tcp_active
+        target.update((event.robot_a, event.robot_b))
+    return [
+        "#ff4057"
+        if robot_id in arm_active
+        else "#f5b942"
+        if robot_id in tcp_active
+        else _COLORS[robot_id - 1]
+        for robot_id in (1, 2, 3)
+    ]
+
+
+def _capsule_xy(
+    base: Sequence[float], tcp: Sequence[float], radius: float
+) -> tuple[list[float], list[float]]:
+    direction_x = float(tcp[0]) - float(base[0])
+    direction_y = float(tcp[1]) - float(base[1])
+    if math.hypot(direction_x, direction_y) <= 1.0e-12:
+        angles = np.linspace(0.0, 2.0 * math.pi, 34)
+        return (
+            (float(base[0]) + radius * np.cos(angles)).tolist(),
+            (float(base[1]) + radius * np.sin(angles)).tolist(),
+        )
+    angle = math.atan2(direction_y, direction_x)
+    base_angles = np.linspace(angle + math.pi / 2.0, angle + 3.0 * math.pi / 2.0, 17)
+    tcp_angles = np.linspace(angle - math.pi / 2.0, angle + math.pi / 2.0, 17)
+    x_values = [float(base[0]) + radius * math.cos(value) for value in base_angles]
+    y_values = [float(base[1]) + radius * math.sin(value) for value in base_angles]
+    x_values.extend(float(tcp[0]) + radius * math.cos(value) for value in tcp_angles)
+    y_values.extend(float(tcp[1]) + radius * math.sin(value) for value in tcp_angles)
+    x_values.append(x_values[0])
+    y_values.append(y_values[0])
+    return x_values, y_values
 
 
 def _post_script(payload: dict[str, object]) -> str:
@@ -165,6 +204,38 @@ function upperBound(values, target) {{
   }}
   return low;
 }}
+function capsule(base, tcp, radius) {{
+  const dx = tcp[0] - base[0], dy = tcp[1] - base[1];
+  const length = Math.hypot(dx, dy);
+  const x = [], y = [];
+  if (length <= 1e-12) {{
+    for (let i = 0; i <= 32; i += 1) {{
+      const angle = 2 * Math.PI * i / 32;
+      x.push(base[0] + radius * Math.cos(angle));
+      y.push(base[1] + radius * Math.sin(angle));
+    }}
+    return [x, y];
+  }}
+  const angle = Math.atan2(dy, dx);
+  for (let i = 0; i <= 16; i += 1) {{
+    const value = angle + Math.PI / 2 + Math.PI * i / 16;
+    x.push(base[0] + radius * Math.cos(value));
+    y.push(base[1] + radius * Math.sin(value));
+  }}
+  for (let i = 0; i <= 16; i += 1) {{
+    const value = angle - Math.PI / 2 + Math.PI * i / 16;
+    x.push(tcp[0] + radius * Math.cos(value));
+    y.push(tcp[1] + radius * Math.sin(value));
+  }}
+  x.push(x[0]); y.push(y[0]);
+  return [x, y];
+}}
+function translucent(hex, alpha) {{
+  const red = parseInt(hex.slice(1, 3), 16);
+  const green = parseInt(hex.slice(3, 5), 16);
+  const blue = parseInt(hex.slice(5, 7), 16);
+  return 'rgba(' + red + ',' + green + ',' + blue + ',' + alpha + ')';
+}}
 function showFrame(frameIndex) {{
   const index = Math.max(0, Math.min(replay.times.length - 1, Number(frameIndex)));
   const time = replay.times[index];
@@ -173,8 +244,8 @@ function showFrame(frameIndex) {{
   for (let robot = 0; robot < 3; robot += 1) {{
     const base = replay.bases[robot];
     const tcp = positions[robot];
-    const armTrace = 1 + robot * 2;
-    const circleTrace = armTrace + 1;
+    const armTrace = replay.traceIndices.arms3d[robot];
+    const circleTrace = replay.traceIndices.tcpCircles3d[robot];
     Plotly.restyle(graph, {{x:[[base[0],tcp[0]]],y:[[base[1],tcp[1]]],z:[[base[2],tcp[2]]],
       'line.color':[colors[robot]],'marker.color':[colors[robot]]}}, [armTrace]);
     const cx = [], cy = [], cz = [];
@@ -191,7 +262,23 @@ function showFrame(frameIndex) {{
       x:[path.x.slice(0,end)],
       y:[path.y.slice(0,end)],
       z:[path.z.slice(0,end)]
-    }}, [7 + robot]);
+    }}, [replay.traceIndices.deposition3d[robot]]);
+    const physical = capsule(base, tcp, replay.armRadii[robot]);
+    const decision = capsule(
+      base,
+      tcp,
+      replay.armRadii[robot] + replay.armClearance / 2
+    );
+    Plotly.restyle(graph, {{
+      x:[physical[0]], y:[physical[1]],
+      'line.color':[colors[robot]], 'fillcolor':[translucent(colors[robot], 0.22)]
+    }}, [replay.traceIndices.physicalCapsules[robot]]);
+    Plotly.restyle(graph, {{
+      x:[decision[0]], y:[decision[1]], 'line.color':[colors[robot]]
+    }}, [replay.traceIndices.decisionCapsules[robot]]);
+    Plotly.restyle(graph, {{
+      x:[[base[0],tcp[0]]], y:[[base[1],tcp[1]]], 'line.color':[colors[robot]]
+    }}, [replay.traceIndices.centerlines2d[robot]]);
   }}
   slider.value = String(index);
   label.textContent = '시간 ' +
@@ -251,26 +338,46 @@ def generate_replay_html(
         deposition = [_deposition_path(trajectory) for trajectory in trajectories.robots]
         vertices = np.asarray(target_mesh.vertices)
         faces = np.asarray(target_mesh.faces)
-        target_trace = go.Mesh3d(
-            x=vertices[:, 0],
-            y=vertices[:, 1],
-            z=vertices[:, 2],
-            i=faces[:, 0],
-            j=faces[:, 1],
-            k=faces[:, 2],
-            color="lightgray",
-            opacity=0.25,
-            name="Target",
-        )
         bases = [list(map(float, robot.base_xyz_mm)) for robot in config.robots]
         radii = [float(robot.tcp_radius_mm) for robot in config.robots]
+        arm_radii = [float(robot.arm_envelope_radius_mm) for robot in config.robots]
         initial = positions[0]
-        traces: list[go.BaseTraceType] = [target_trace]
+        figure = make_subplots(
+            rows=1,
+            cols=2,
+            specs=[[{"type": "scene"}, {"type": "xy"}]],
+            column_widths=[0.62, 0.38],
+            subplot_titles=("3D trajectory replay", "XY Capsule top view (actual scale)"),
+        )
+        figure.add_trace(
+            go.Mesh3d(
+                x=vertices[:, 0],
+                y=vertices[:, 1],
+                z=vertices[:, 2],
+                i=faces[:, 0],
+                j=faces[:, 1],
+                k=faces[:, 2],
+                color="lightgray",
+                opacity=0.25,
+                name="Target",
+            ),
+            row=1,
+            col=1,
+        )
+        trace_indices: dict[str, list[int]] = {
+            "arms3d": [],
+            "tcpCircles3d": [],
+            "deposition3d": [],
+            "physicalCapsules": [],
+            "decisionCapsules": [],
+            "centerlines2d": [],
+        }
         for index, robot in enumerate(config.robots):
             base = bases[index]
             tcp = initial[index]
             color = colors[0][index]
-            traces.append(
+            trace_indices["arms3d"].append(len(figure.data))
+            figure.add_trace(
                 go.Scatter3d(
                     x=[base[0], tcp[0]],
                     y=[base[1], tcp[1]],
@@ -279,10 +386,13 @@ def generate_replay_html(
                     line={"color": color, "width": 7},
                     marker={"size": 4, "color": color},
                     name=f"Robot {robot.id}",
-                )
+                ),
+                row=1,
+                col=1,
             )
             circle_x, circle_y, circle_z = _circle(tcp, radii[index])
-            traces.append(
+            trace_indices["tcpCircles3d"].append(len(figure.data))
+            figure.add_trace(
                 go.Scatter3d(
                     x=circle_x,
                     y=circle_y,
@@ -291,10 +401,13 @@ def generate_replay_html(
                     line={"color": color, "width": 2},
                     name=f"R{robot.id} TCP radius",
                     showlegend=False,
-                )
+                ),
+                row=1,
+                col=1,
             )
         for index, robot in enumerate(config.robots):
-            traces.append(
+            trace_indices["deposition3d"].append(len(figure.data))
+            figure.add_trace(
                 go.Scatter3d(
                     x=[],
                     y=[],
@@ -302,11 +415,93 @@ def generate_replay_html(
                     mode="lines",
                     line={"color": _COLORS[index], "width": 5},
                     name=f"Robot {robot.id} completed D path",
-                )
+                ),
+                row=1,
+                col=1,
             )
-        figure = go.Figure(data=traces)
+        workspace_angles = np.linspace(0.0, 2.0 * math.pi, 65)
+        workspace_center = config.workspace.center_xy_mm
+        figure.add_trace(
+            go.Scatter(
+                x=workspace_center[0] + config.workspace.radius_mm * np.cos(workspace_angles),
+                y=workspace_center[1] + config.workspace.radius_mm * np.sin(workspace_angles),
+                mode="lines",
+                fill="toself",
+                fillcolor="rgba(56,189,248,0.06)",
+                line={"color": "rgba(56,189,248,0.55)", "dash": "dot"},
+                name="Workspace",
+            ),
+            row=1,
+            col=2,
+        )
+        triangle = [*bases, bases[0]]
+        figure.add_trace(
+            go.Scatter(
+                x=[point[0] for point in triangle],
+                y=[point[1] for point in triangle],
+                mode="lines+markers",
+                line={"color": "#64748b", "dash": "dot"},
+                marker={"symbol": "triangle-up", "size": 9},
+                name="Robot bases",
+            ),
+            row=1,
+            col=2,
+        )
+        for index, robot in enumerate(config.robots):
+            base = bases[index]
+            tcp = initial[index]
+            color = colors[0][index]
+            physical_x, physical_y = _capsule_xy(base, tcp, arm_radii[index])
+            decision_x, decision_y = _capsule_xy(
+                base,
+                tcp,
+                arm_radii[index] + config.collision.arm_clearance_mm / 2.0,
+            )
+            trace_indices["physicalCapsules"].append(len(figure.data))
+            figure.add_trace(
+                go.Scatter(
+                    x=physical_x,
+                    y=physical_y,
+                    mode="lines",
+                    fill="toself",
+                    fillcolor=_rgba(color, 0.22),
+                    line={"color": color, "width": 1},
+                    name=f"R{robot.id} physical Capsule",
+                ),
+                row=1,
+                col=2,
+            )
+            trace_indices["decisionCapsules"].append(len(figure.data))
+            figure.add_trace(
+                go.Scatter(
+                    x=decision_x,
+                    y=decision_y,
+                    mode="lines",
+                    line={"color": color, "width": 2, "dash": "dash"},
+                    name=f"R{robot.id} decision outline",
+                ),
+                row=1,
+                col=2,
+            )
+            trace_indices["centerlines2d"].append(len(figure.data))
+            figure.add_trace(
+                go.Scatter(
+                    x=[base[0], tcp[0]],
+                    y=[base[1], tcp[1]],
+                    mode="lines+markers",
+                    line={"color": color, "width": 2},
+                    marker={"size": 5},
+                    name=f"R{robot.id} centerline",
+                    showlegend=False,
+                ),
+                row=1,
+                col=2,
+            )
         figure.update_layout(
-            title=f"WAAM three-robot replay · {total:,} frames · {interval:g} s interval",
+            title=(
+                f"WAAM three-robot replay · {total:,} frames · {interval:g} s interval · "
+                "red=ARM_ENVELOPE, amber=TCP_RADIUS"
+            ),
             paper_bgcolor="#08111d",
             plot_bgcolor="#08111d",
             font={"color": "#dce8f5"},
@@ -318,13 +513,24 @@ def generate_replay_html(
             },
             margin={"l": 0, "r": 0, "t": 54, "b": 0},
         )
+        figure.update_xaxes(title_text="X [mm]", row=1, col=2)
+        figure.update_yaxes(
+            title_text="Y [mm]",
+            scaleanchor="x",
+            scaleratio=1.0,
+            row=1,
+            col=2,
+        )
         payload: dict[str, object] = {
             "times": [round(value, 6) for value in frame_times],
             "positions": positions,
             "colors": colors,
             "bases": bases,
             "radii": radii,
+            "armRadii": arm_radii,
+            "armClearance": float(config.collision.arm_clearance_mm),
             "deposition": deposition,
+            "traceIndices": trace_indices,
         }
         html_text = figure.to_html(
             include_plotlyjs=True,

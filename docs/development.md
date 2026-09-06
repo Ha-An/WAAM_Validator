@@ -47,7 +47,9 @@ python -m pip install -e . --no-deps
 
 `requirements.lock`에는 runtime과 pytest, Ruff, mypy, psutil 등 개발 도구의 해석
 버전이 함께 고정되어 있습니다. `pyproject.toml`의 직접 의존성을 바꾸면 lock도 함께
-갱신하고 `pip check`로 충돌을 확인합니다.
+갱신하고 `pip check`로 충돌을 확인합니다. GitHub Actions도 lock을 먼저 설치한 뒤
+package를 `--no-deps`로 연결하므로 임의의 최신 transitive dependency를 다시 해석하지
+않습니다.
 
 ## 품질 검사
 
@@ -133,6 +135,10 @@ Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새
 테스트 cleanup에서도 저장소나 사용자 입력 폴더 전체를 대상으로 한 재귀 삭제를
 사용하지 마십시오.
 
+Worker가 강제 종료되면 `dashboard_status.json`만 있는 미완성 output 디렉터리가 남을
+수 있습니다. 결과 선택 로직은 `summary.json` 또는 `error.json`이 있는 완료 디렉터리만
+사용합니다. 미완성 폴더는 자동 삭제하지 않으며 사용자가 경로를 확인한 뒤 정리합니다.
+
 ## 코드 변경 점검표
 
 - [ ] 공개 API·동작 변경에 맞게 `src/waam_validator/_version.py`의 애플리케이션 버전을 조정했다.
@@ -149,6 +155,7 @@ Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새
 - [Python API](python-api.md)
 - [결과 및 산출물 참조](results-reference.md)
 - [버전 및 호환성](versioning.md)
+- [릴리스 준비 및 검증 기록](release-readiness.md)
 - [입력물 인터페이스](../WAAM_Validator_입력물_인터페이스.md)
 
 [문서 안내로 돌아가기](README.md)

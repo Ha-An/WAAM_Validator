@@ -70,10 +70,23 @@ def _optional(value: float | None) -> str | float:
     return "" if value is None else value
 
 
+def _write_validation_input_manifest(result: ValidationResult) -> None:
+    inputs: dict[str, dict[str, int]] = {}
+    for filename in ("config.yaml", "trajectory.csv", "target.stl"):
+        stat = (result.input_dir / filename).stat()
+        inputs[filename] = {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    (result.output_dir / "validation_inputs.json").write_text(
+        json.dumps({"schema_version": "2.0", "inputs": inputs}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def write_result_files(result: ValidationResult, config: Config) -> None:
     """Write all configured core artifacts plus warnings and log files."""
     output = result.output_dir
     try:
+        _write_validation_input_manifest(result)
         if config.output.save_summary_json:
             (output / "summary.json").write_text(
                 json.dumps(result.summary_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -90,10 +103,15 @@ def write_result_files(result: ValidationResult, config: Config) -> None:
                     "start_s",
                     "end_s",
                     "duration_s",
-                    "min_tcp_distance_mm",
-                    "required_tcp_distance_mm",
-                    "crossing_x_mm",
-                    "crossing_y_mm",
+                    "minimum_distance_mm",
+                    "required_distance_mm",
+                    "minimum_safety_margin_mm",
+                    "minimum_capsule_surface_clearance_mm",
+                    "minimum_distance_time_s",
+                    "closest_a_x_mm",
+                    "closest_a_y_mm",
+                    "closest_b_x_mm",
+                    "closest_b_y_mm",
                 ],
                 [
                     {
@@ -104,10 +122,17 @@ def write_result_files(result: ValidationResult, config: Config) -> None:
                         "start_s": event.start_s,
                         "end_s": event.end_s,
                         "duration_s": event.duration_s,
-                        "min_tcp_distance_mm": _optional(event.min_tcp_distance_mm),
-                        "required_tcp_distance_mm": _optional(event.required_tcp_distance_mm),
-                        "crossing_x_mm": _optional(event.crossing_x_mm),
-                        "crossing_y_mm": _optional(event.crossing_y_mm),
+                        "minimum_distance_mm": event.minimum_distance_mm,
+                        "required_distance_mm": event.required_distance_mm,
+                        "minimum_safety_margin_mm": event.minimum_safety_margin_mm,
+                        "minimum_capsule_surface_clearance_mm": _optional(
+                            event.minimum_capsule_surface_clearance_mm
+                        ),
+                        "minimum_distance_time_s": event.minimum_distance_time_s,
+                        "closest_a_x_mm": event.closest_a_x_mm,
+                        "closest_a_y_mm": event.closest_a_y_mm,
+                        "closest_b_x_mm": event.closest_b_x_mm,
+                        "closest_b_y_mm": event.closest_b_y_mm,
                     }
                     for event in result.collision.events
                 ],
@@ -271,7 +296,12 @@ def _render_markdown(result: ValidationResult) -> str:
 
 ## Collision
 
-- ARM_CROSS events: {result.collision.arm_cross_event_count}
+- Arm Envelope events: {result.collision.arm_envelope_event_count}
+- Minimum Arm Envelope safety margin: {result.collision.minimum_arm_safety_margin_mm:.2f} mm
+- Arm centerline distance at worst case:
+  {result.collision.arm_centerline_distance_at_worst_mm:.2f} mm
+- Arm required centerline distance at worst case:
+  {result.collision.arm_required_distance_at_worst_mm:.2f} mm
 - TCP_RADIUS events: {result.collision.tcp_radius_event_count}
 - Minimum TCP distance: {result.collision.minimum_tcp_distance_mm:.2f} mm
 
@@ -291,7 +321,10 @@ def _render_markdown(result: ValidationResult) -> str:
 
 {warnings}
 
-## Errors
+## Error-severity Validation Issues
+
+These are completed validation findings that contribute to a normal `FAIL`. They do not mean
+that the validation pipeline ended with `ERROR`.
 
 {errors}
 
@@ -308,7 +341,7 @@ def _render_markdown(result: ValidationResult) -> str:
 def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Path) -> None:
     """Best-effort minimal fatal error artifact."""
     payload = {
-        "schema_version": "1.1",
+        "schema_version": "2.0",
         "validator_version": __version__,
         "status": "ERROR",
         "code": error.code,
@@ -349,17 +382,23 @@ def render_console_summary(result: ValidationResult) -> str:
             f"margin={reach_item.minimum_margin_mm:.2f} mm | "
             f"violations={reach_item.violation_point_count}"
         )
-    pair = result.collision.minimum_tcp_pair
+    arm_pair = result.collision.minimum_arm_pair
+    tcp_pair = result.collision.minimum_tcp_pair
     lines.extend(
         [
             "",
             "[Collision]",
-            f"ARM_CROSS events : {result.collision.arm_cross_event_count}",
+            f"ARM_ENVELOPE events: {result.collision.arm_envelope_event_count}",
+            f"Minimum Arm safety margin: "
+            f"{result.collision.minimum_arm_safety_margin_mm:.2f} mm "
+            f"(R{arm_pair[0]}-R{arm_pair[1]}; centerline "
+            f"{result.collision.arm_centerline_distance_at_worst_mm:.2f} mm; required >= "
+            f"{result.collision.arm_required_distance_at_worst_mm:.2f} mm)",
             f"TCP_RADIUS events: {result.collision.tcp_radius_event_count}",
             f"Total events     : {len(result.collision.events)}",
             f"Minimum TCP distance : {result.collision.minimum_tcp_distance_mm:.2f} mm "
-            f"(R{pair[0]}-R{pair[1]}; required >= "
-            f"{result.collision.minimum_required_distance_mm:.2f} mm)",
+            f"(R{tcp_pair[0]}-R{tcp_pair[1]}; required >= "
+            f"{result.collision.minimum_tcp_required_distance_mm:.2f} mm)",
             f"Collision-free       : {'YES' if result.collision_free else 'NO'}",
             "",
             "[Shape]",

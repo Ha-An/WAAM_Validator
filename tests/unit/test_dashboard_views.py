@@ -6,6 +6,7 @@ import pytest
 
 from waam_validator.dashboard import single_app
 from waam_validator.dashboard.app import (
+    _arm_envelope_gauge,
     _collision_gauge,
     _config_inspection,
     _shape_figure,
@@ -18,10 +19,12 @@ from waam_validator.dashboard.single_app import _layer_display_rows, _reach_disp
 def _collision_payload(*, enabled: bool, event_count: int) -> dict[str, object]:
     return {
         "collision": {
-            "minimum_tcp_distance_mm": 300.0,
-            "minimum_required_distance_mm": 300.0,
-            "tcp_radius_event_count": event_count,
-            "checks_enabled": {"tcp_radius": enabled},
+            "tcp_radius": {
+                "minimum_distance_mm": 300.0,
+                "required_distance_at_minimum_mm": 300.0,
+                "event_count": event_count,
+                "enabled": enabled,
+            },
         }
     }
 
@@ -36,6 +39,46 @@ def test_tcp_gauge_uses_recorded_verdict_at_touching_threshold(
     figure = _collision_gauge(_collision_payload(enabled=enabled, event_count=events))
 
     assert figure.data[0].gauge.bar.color == expected_color
+
+
+def test_arm_gauge_shows_required_distance_and_recorded_margin() -> None:
+    figure = _arm_envelope_gauge(
+        {
+            "collision": {
+                "arm_envelope": {
+                    "enabled": True,
+                    "passed": False,
+                    "event_count": 2,
+                    "centerline_distance_at_worst_mm": 225.0,
+                    "required_distance_at_worst_mm": 250.0,
+                    "minimum_safety_margin_mm": -25.0,
+                }
+            }
+        }
+    )
+
+    assert figure.data[0].gauge.bar.color == "#ff6376"
+    assert figure.data[0].value == pytest.approx(225.0)
+    assert figure.data[0].delta.reference == pytest.approx(250.0)
+    assert "-25.00 mm" in str(figure.data[0].title.text)
+
+
+def test_old_result_schema_requires_revalidation(fixture_root: Path, tmp_path: Path) -> None:
+    run_dir = tmp_path / "output" / "legacy"
+    run_dir.mkdir(parents=True)
+    run = RunRecord(
+        run_dir,
+        "PASS",
+        {"schema_version": "1.1", "status": "PASS"},
+        "legacy",
+    )
+
+    view = single_app._result_view(
+        "token", JobRecord("fixture", fixture_root / "collision_free"), run
+    )
+
+    assert "현재 Capsule 결과 형식이 아닙니다" in str(view)
+    assert "Validation을 다시 실행" in str(view)
 
 
 def test_one_corrupt_result_csv_does_not_discard_other_tables(
@@ -53,15 +96,32 @@ def test_one_corrupt_result_csv_does_not_discard_other_tables(
 
     monkeypatch.setattr(single_app, "read_csv_records", fake_read_csv_records)
     payload = {
+        "schema_version": "2.0",
         "status": "PASS",
         "schedule": {"makespan_s": 10.0},
         "reach": {"passed": True, "robots": []},
         "collision": {
             "collision_event_count": 0,
-            "tcp_radius_event_count": 0,
-            "minimum_tcp_distance_mm": 500.0,
-            "minimum_required_distance_mm": 300.0,
-            "checks_enabled": {"tcp_radius": True},
+            "arm_envelope": {
+                "enabled": True,
+                "passed": True,
+                "event_count": 0,
+                "minimum_safety_margin_mm": 100.0,
+                "centerline_distance_at_worst_mm": 350.0,
+                "required_distance_at_worst_mm": 250.0,
+                "pair": [1, 2],
+                "time_s": 2.0,
+                "closest_points_xy_mm": [[0.0, 0.0], [350.0, 0.0]],
+                "tcp_positions_xy_mm": [[0.0, 0.0], [350.0, 0.0], [0.0, 500.0]],
+            },
+            "tcp_radius": {
+                "enabled": True,
+                "passed": True,
+                "event_count": 0,
+                "minimum_distance_mm": 500.0,
+                "required_distance_at_minimum_mm": 300.0,
+                "pair": [1, 2],
+            },
         },
         "shape": {"coverage": 1.0, "iou": 1.0, "failed_layer_count": 0},
         "failure_reasons": [],
@@ -84,9 +144,12 @@ def test_one_corrupt_result_csv_does_not_discard_other_tables(
         "warnings.csv",
     ]
     rendered = str(view)
-    assert "최소 TCP 간 거리" in rendered
-    assert "검사 영역별 판정" in rendered
-    assert "전체 형상 판정 요약" in rendered
+    assert "TCP Radius 안전거리" in rendered
+    assert "판정 결과와 확인사항" in rendered
+    assert "형상 판정과 핵심 지표" in rendered
+    assert "검증 영역별 결론" not in rendered
+    assert "Arm Envelope 안전 여유" not in rendered
+    assert "전체 형상 판정 요약" not in rendered
 
 
 def test_reach_result_rows_are_human_formatted() -> None:
@@ -115,6 +178,37 @@ def test_reach_result_rows_are_human_formatted() -> None:
             "violation_point_count": "0",
         }
     ]
+
+
+def test_fail_details_are_collapsed_and_payload_errors_have_a_fallback(
+    fixture_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(single_app, "read_csv_records", lambda _path, _name: [])
+    payload = {
+        "schema_version": "2.0",
+        "status": "FAIL",
+        "schedule": {"makespan_s": 10.0},
+        "reach": {"passed": False, "robots": []},
+        "collision": {"passed": True, "arm_envelope": {}, "tcp_radius": {}},
+        "shape": {"passed": True},
+        "failure_reasons": ["ROBOT_REACH: R1 exceeds configured reach."],
+        "warnings": [],
+        "errors": ["ROBOT_REACH_VIOLATION - detailed reach evidence"],
+    }
+    run_dir = tmp_path / "output" / "2026-01-01_000000"
+    run_dir.mkdir(parents=True)
+    run = RunRecord(run_dir, "FAIL", payload, "2026-01-01 00:00:00")
+
+    rendered = str(
+        single_app._result_view(
+            "token", JobRecord("fixture", fixture_root / "collision_free"), run
+        )
+    )
+
+    assert "FAIL 세부 판정 기록 1건 보기" in rendered
+    assert "detailed reach evidence" in rendered
 
 
 def test_layer_result_rows_use_percentages_and_verdict_text() -> None:
@@ -167,6 +261,35 @@ def test_layer_chart_only_draws_actual_per_layer_threshold() -> None:
     assert any(trace.name == "실패 Layer" for trace in figure.data)
 
 
+def test_layer_chart_magnifies_small_errors_without_threshold_compression() -> None:
+    figure = _shape_figure(
+        [
+            {
+                "layer_index": 1,
+                "coverage": 0.99999,
+                "underfill_ratio": 0.00001,
+                "overfill_ratio": 0.000002,
+                "iou": 0.999988,
+                "passed": True,
+            },
+            {
+                "layer_index": 2,
+                "coverage": 0.99998,
+                "underfill_ratio": 0.00002,
+                "overfill_ratio": 0.000003,
+                "iou": 0.999977,
+                "passed": True,
+            },
+        ],
+        {"minimum_layer_iou": 0.8},
+    )
+
+    assert len(figure.layout.shapes) == 0
+    assert any(trace.name == "IoU 손실" for trace in figure.data)
+    assert float(figure.layout.yaxis.range[0]) > 0.99
+    assert float(figure.layout.yaxis2.range[1]) <= 0.001
+
+
 def test_trajectory_makespan_displays_seconds_minutes_and_hours() -> None:
     view = _trajectory_inspection(
         {
@@ -199,12 +322,13 @@ def test_config_view_distinguishes_robot_base_home_and_tcp_radius() -> None:
                         "base_xyz_mm": [-1400.0, 0.0, 0.0],
                         "home_xyz_mm": [-1000.0, 0.0, 1700.0],
                         "tcp_radius_mm": 100.0,
+                        "arm_envelope_radius_mm": 100.0,
                         "reach_radius_mm": 2000.0,
                     }
                 ],
                 "process": {},
                 "workspace": {},
-                "collision": {},
+                "collision": {"arm_clearance_mm": 50.0},
                 "validation": {},
                 "shape_validation": {},
                 "output": {},
@@ -214,6 +338,7 @@ def test_config_view_distinguishes_robot_base_home_and_tcp_radius() -> None:
 
     assert "Robot 1 Base 위치" in rendered
     assert "Robot 1 Home TCP 위치" in rendered
-    assert "Robot 1 TCP 안전 반경 / Reach 반경" in rendered
+    assert "Robot 1 TCP / Arm Capsule / Reach 반경" in rendered
+    assert "R1–R1" not in rendered
     assert "충돌 이벤트 병합 최대 간격" in rendered
     assert "Schema" not in rendered

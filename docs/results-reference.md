@@ -35,9 +35,13 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 `schema_version`은 **결과 파일 형식의 버전**이며 Config나 WAAM Validator
 애플리케이션 버전이 아닙니다. `config.yaml`에는 버전 필드가 없습니다.
 
+현재 UI와 Replay worker는 Capsule 판정 구조를 가진 결과 schema `2.0`만 지원합니다.
+기존 schema `1.1` 파일을 삭제하지는 않지만 최근 결과로 재사용하지 않으며,
+Validation을 다시 실행하라는 안내를 표시합니다.
+
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "2.0",
   "validator_version": "1.0",
   "status": "PASS",
   "input": {},
@@ -96,12 +100,20 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 | --- | --- |
 | `passed` | 활성 검사에서 event가 하나도 없는지 |
 | `collision_event_count` | 두 종류 event 총수 |
-| `arm_cross_event_count` | ARM_CROSS event 수 |
-| `tcp_radius_event_count` | TCP_RADIUS event 수 |
-| `minimum_tcp_distance_mm` | 전체 sample과 pair의 최소 TCP XY 거리 |
-| `minimum_tcp_pair` | 그 최소값을 가진 robot pair |
-| `minimum_required_distance_mm` | 해당 pair TCP 반경 합 |
-| `checks_enabled` | arm crossing, TCP radius 활성 여부 |
+| `arm_envelope` | 2D Arm Capsule 판정과 최악 safety margin 정보 |
+| `tcp_radius` | TCP 원형 안전영역 판정과 최소 TCP 거리 정보 |
+
+`arm_envelope`에는 `enabled`, `passed`, `event_count`,
+`minimum_safety_margin_mm`, `centerline_distance_at_worst_mm`,
+`required_distance_at_worst_mm`, `capsule_surface_clearance_at_worst_mm`, `pair`,
+`time_s`, `closest_points_xy_mm`, 최악 시점의 세 `tcp_positions_xy_mm`가 들어갑니다.
+Safety margin은 중심선 최단거리에서 두 Arm Capsule 반경과 공통 안전거리를 모두 뺀
+값이므로 음수이면 요구 여유가 부족합니다. Capsule 표면 간격은 공통 안전거리를 빼기
+전 실제 두 대표 폭 사이의 간격입니다.
+
+`tcp_radius`에는 `enabled`, `passed`, `event_count`, `minimum_distance_mm`,
+`required_distance_at_minimum_mm`, `pair`, `time_s`가 들어갑니다. 검사를 비활성화해도
+두 영역의 최소 지표는 계산되지만 event와 FAIL은 만들지 않습니다.
 
 ### `shape`
 
@@ -121,8 +133,10 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 | `target_volume_discrepancy_ratio` | mesh 체적과 layer 적분 체적의 상대 차이 |
 
 `failure_reasons`는 최종 FAIL을 만든 문장을 판정 순서대로 담습니다. `warnings`는
-판정을 반드시 실패시키지는 않는 이슈, `errors`는 실행 가능한 process 위반을
-담습니다.
+판정을 반드시 실패시키지는 않는 이슈, `errors`는 계산을 끝낸 뒤 정상 FAIL 판정에
+사용한 error-severity 상세 기록을 담습니다. `errors` 필드는 파싱·계산·출력 문제로
+최종 판정을 만들지 못한 `status: ERROR`와 의미가 다릅니다. 보고서와 UI는 이를 각각
+`FAIL 사유`와 `세부 판정 기록`으로 구분합니다.
 
 ## `robot_metrics.csv`
 
@@ -153,16 +167,20 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 | 필드 | 의미 |
 | --- | --- |
 | `event_id` | 결정론적으로 정렬한 1-based ID |
-| `type` | `ARM_CROSS` 또는 `TCP_RADIUS` |
+| `type` | `ARM_ENVELOPE` 또는 `TCP_RADIUS` |
 | `robot_a`, `robot_b` | robot pair |
 | `start_s`, `end_s`, `duration_s` | 첫 true, 마지막 true와 그 차이 |
-| `min_tcp_distance_mm` | TCP_RADIUS event 내부 최소 거리; 다른 종류는 빈 값 |
-| `required_tcp_distance_mm` | 해당 pair의 요구 거리; 다른 종류는 빈 값 |
-| `crossing_x_mm`, `crossing_y_mm` | ARM_CROSS 대표 XY 위치; 다른 종류는 빈 값 |
+| `minimum_distance_mm` | event 내부 최악 시점의 중심선 또는 TCP 거리 |
+| `required_distance_mm` | 해당 event 종류와 pair의 요구 거리 |
+| `minimum_safety_margin_mm` | 최소 거리 - 요구 거리 |
+| `minimum_capsule_surface_clearance_mm` | ARM_ENVELOPE의 실제 Capsule 표면 간격; TCP_RADIUS는 빈 값 |
+| `minimum_distance_time_s` | event 내부 최소 safety margin 발생 시각 |
+| `closest_a_x_mm`, `closest_a_y_mm` | Robot A 중심선 또는 TCP의 최단점 |
+| `closest_b_x_mm`, `closest_b_y_mm` | Robot B 중심선 또는 TCP의 최단점 |
 
 짧은 false gap이 설정 한계 이하면 event 범위에 포함되지만 end는 마지막 true sample
-시각입니다. 표에 없는 내부 marker와 최소거리 시각은 Replay 표시 계산에 사용될 수
-있습니다.
+시각입니다. 최소 거리와 closest point는 병합된 event 전체에서 safety margin이 가장
+작은 true sample을 기준으로 기록합니다.
 
 ## `layer_metrics.csv`
 
@@ -187,6 +205,9 @@ Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다
 합계로 다시 계산합니다.
 
 ## `warnings.csv`
+
+파일명은 기존 공개 인터페이스를 유지하지만 내용은 warning에만 한정되지 않습니다.
+판정 자동화에서는 반드시 `severity` 열을 함께 읽어야 합니다.
 
 | 필드 | 의미 |
 | --- | --- |
@@ -223,7 +244,8 @@ Reach 사용량, 충돌 sample/event 수, layer 범위, 형상 지표와 최종 
 | `gantt.png` | 일반 모드 + `save_static_plots` | 로봇별 mode timeline |
 | `shape_metrics_by_layer.png` | 일반 모드 + `save_static_plots` | layer별 Coverage/IoU 등 |
 | `worst_layer_comparison.png` | 일반 모드 + `save_static_plots` | 가장 나쁜 layer의 Target/Deposition 비교 |
-| `replay.html` | `--replay` 또는 UI 별도 생성 | 외부 서버가 필요 없는 Plotly 3D Replay |
+| `arm_envelope_worst_case.png` | 일반 모드 + `save_static_plots` | 최악 시점의 실제 Capsule, 판정 외곽선, closest points를 실제 XY 축척으로 표시 |
+| `replay.html` | `--replay` 또는 UI 별도 생성 | 3D 장면과 실제 축척 XY Capsule top-view를 포함한 self-contained Replay |
 
 `--headless`는 PNG와 HTML만 생략하며 핵심 판정 파일을 바꾸지 않습니다.
 
@@ -247,7 +269,7 @@ UI에서 시작한 run에는 다음 내부 상태 파일이 있을 수 있습니
 
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "2.0",
   "validator_version": "1.0",
   "status": "ERROR",
   "code": "...",

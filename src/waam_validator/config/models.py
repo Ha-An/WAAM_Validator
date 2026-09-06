@@ -21,6 +21,8 @@ class RobotConfig(FrozenModel):
     # UI visualization; it never replaces the fixed robot base.
     home_xyz_mm: tuple[float, float, float] | None = None
     tcp_radius_mm: float = Field(gt=0)
+    # Radius of the simplified Base-to-TCP capsule in the World XY plane.
+    arm_envelope_radius_mm: float = Field(gt=0)
     reach_radius_mm: float = Field(gt=0)
 
 
@@ -54,7 +56,8 @@ class WorkspaceConfig(FrozenModel):
 
 
 class CollisionConfig(FrozenModel):
-    check_arm_crossing: bool
+    check_arm_envelope: bool
+    arm_clearance_mm: float = Field(ge=0)
     check_tcp_radius: bool
     touching_is_collision: bool
     geometry_epsilon_mm: float = Field(gt=0)

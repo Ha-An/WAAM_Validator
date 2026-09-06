@@ -53,10 +53,17 @@ def _load_events(path: Path) -> list[CollisionEvent]:
                     start_s=float(row["start_s"]),
                     end_s=float(row["end_s"]),
                     duration_s=float(row["duration_s"]),
-                    min_tcp_distance_mm=_optional_float(row.get("min_tcp_distance_mm")),
-                    required_tcp_distance_mm=_optional_float(row.get("required_tcp_distance_mm")),
-                    crossing_x_mm=_optional_float(row.get("crossing_x_mm")),
-                    crossing_y_mm=_optional_float(row.get("crossing_y_mm")),
+                    minimum_distance_mm=float(row["minimum_distance_mm"]),
+                    required_distance_mm=float(row["required_distance_mm"]),
+                    minimum_safety_margin_mm=float(row["minimum_safety_margin_mm"]),
+                    minimum_capsule_surface_clearance_mm=_optional_float(
+                        row.get("minimum_capsule_surface_clearance_mm")
+                    ),
+                    minimum_distance_time_s=float(row["minimum_distance_time_s"]),
+                    closest_a_x_mm=float(row["closest_a_x_mm"]),
+                    closest_a_y_mm=float(row["closest_a_y_mm"]),
+                    closest_b_x_mm=float(row["closest_b_x_mm"]),
+                    closest_b_y_mm=float(row["closest_b_y_mm"]),
                 )
             )
     return events
@@ -132,7 +139,7 @@ def run_replay_worker(job_dir: Path, run_dir: Path, interval_s: float) -> int:
         duration_s = time.monotonic() - started
         size_bytes = (run_dir / "replay.html").stat().st_size
         manifest = {
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "status": "READY",
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "interval_s": interval_s,

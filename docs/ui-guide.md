@@ -45,6 +45,7 @@ preview를 만듭니다.
 
 - 파일 절대 경로, 크기, 수정 시각
 - Config 필드·타입과 로봇·공정·workspace·threshold
+- Robot별 Arm Capsule 반경·전체 폭, 공통 안전거리와 pair별 요구 중심선 간격
 - Trajectory 전체 행 수, makespan, 로봇별 시간·XYZ 범위, D/T/W 시간·거리·속도
 - Target의 정점·면·body 수, 경계·치수·체적·watertight 상태
 - Trajectory 의미, Reach 예상 위반, Target/trajectory 좌표 일관성
@@ -152,53 +153,82 @@ UI는 실행 중에만 상태 파일의 작은 진행 정보와 제한된 log ta
 
 ## 화면 3: 결과
 
-### 종합
+상단에는 결론에 필요한 네 항목만 표시합니다. 전체 작업시간, Robot Reach, 로봇 간
+충돌 안전, 적층 형상입니다. 최종 PASS/FAIL과 실행 폴더·시각은 바로 위 결과 배너에서
+확인합니다.
 
-PASS/FAIL, makespan, 충돌 event 수, 최소 TCP 거리, Coverage, IoU, 실패 layer 수와
-Failure Reasons를 우선 확인합니다. Warning은 결과를 무조건 FAIL로 만들지 않으므로
-Failure Reasons와 구분해 읽어야 합니다.
+### 판정 요약
 
-### 로봇 · Reach
+FAIL 사유와 추가 확인사항만 모아서 보여줍니다. Reach, 2D 충돌 안전, Layer 형상 비교의
+결론은 위쪽 핵심 카드에 이미 있으므로 이 탭에서 반복하지 않습니다. Warning은 결과를
+무조건 FAIL로 만들지 않으므로 FAIL 사유와 구분됩니다. 정상 FAIL을 만든 error-severity
+기록은 치명적인 실행 `ERROR`와 혼동하지 않도록 `FAIL 세부 판정 기록` 펼침 영역에
+표시합니다.
 
-로봇별 completion, Deposition/Travel/Wait 시간·비율, 적층·이동 거리, 평균 속도와 Reach 반경,
-최대 사용 거리, margin, 사용률, 위반 절점 수를 확인합니다.
+### 로봇 작업
 
-### 충돌
+상태 시간 그래프에는 Deposition/Travel/Wait 누적 시간을 표시합니다. 하나로 합친 상세
+표에서 completion, D/T/W 시간, D/T 거리·평균속도, 최대/한계 Reach, Reach margin과
+판정을 함께 확인합니다.
 
-ARM_CROSS와 TCP_RADIUS event의 robot pair, 시작·종료·지속 시간과 최소 거리를
-확인합니다. Event가 없더라도 전체 최소 TCP 거리와 요구 거리를 비교할 수 있습니다.
+### 충돌 안전
 
-### 형상
+Arm Envelope와 TCP Radius는 반원형 gauge 대신 `측정 최소거리`, `요구 최소거리`,
+`안전 여유`를 직접 비교합니다. 안전 여유가 양수면 요구거리보다 떨어져 있다는 뜻입니다.
+각 항목에는 최악 robot pair·시각과 event 수가 함께 표시됩니다. Event가 없으면 비어 있는
+시간축과 표를 반복하지 않고 “충돌 이벤트 없음” 상태 하나만 표시합니다.
 
-전체 Coverage, Underfill, Overfill, IoU와 실패 layer 비율을 설정 threshold와
-비교합니다. 상세 표에서 layer별 target/deposition/intersection 면적과 IoU를
-확인하고 worst-layer PNG를 함께 봅니다.
+최악 시점 XY Snapshot은 실제 Arm Capsule을 채움 영역으로, 각 Capsule에 공통
+`arm_clearance_mm / 2`를 더한 판정 외곽선을 점선으로 표시합니다. Closest points와
+그 사이 거리선은 실제 mm 축척으로 그리며 PASS/FAIL과 수치를 색상 외 텍스트로도
+제공합니다. 정적 산출물 `arm_envelope_worst_case.png`에서도 같은 정보를 확인합니다.
 
-### 산출물
+### 형상 비교
 
-보고서, JSON/CSV, 로그, PNG와 `deposited.stl`을 내려받거나 열 수 있습니다.
-시각화가 꺼진 headless 결과는 해당 영역만 비어 있고 나머지 지표는 정상 표시됩니다.
+전체 Coverage·IoU, 최대 Layer Underfill·Overfill과 실패 Layer 수를 우선 표시합니다.
+Layer 그래프의 위쪽은 Coverage·IoU이고 아래쪽은 작은 Underfill·Overfill·IoU 손실을
+확대한 그래프입니다. 따라서 모든 값이 100%에 가까운 샘플에서도 미세한 차이를 확인할
+수 있습니다. 정확한 값은 Layer별 수치 표에서 네 자리 백분율로 확인합니다. 형상
+임계값은 이 탭의 `형상 판정 기준 보기`를 펼쳐 확인합니다.
+
+### 파일·Replay
+
+결과 파일은 사람이 이해할 수 있는 이름과 실제 파일명을 함께 표시합니다. 기존의 정적
+PNG 갤러리는 화면 그래프와 중복되어 제거했으며 PNG 자체는 결과 파일 목록에서 열거나
+내려받을 수 있습니다. 시각화가 꺼진 headless 결과도 나머지 파일과 지표는 정상 표시됩니다.
 
 ## Replay를 나중에 생성하기
 
-기본 Validation에는 `replay.html`이 없습니다. 산출물 탭에서 다음 순서로 만듭니다.
+기본 Validation에는 `replay.html`이 없습니다. 파일·Replay 탭에서 다음 순서로 만듭니다.
 
 1. 빠른 확인, 권장, 상세 preset 또는 직접 frame 간격을 선택합니다.
 2. 예상 frame 수, 생성 시간 범위와 파일 크기 범위를 확인합니다.
 3. `Replay 생성`을 누릅니다.
-4. 별도 process가 끝나면 같은 탭에서 Replay를 지연 로딩합니다.
+4. 별도 process가 끝나면 같은 탭에서 Replay를 지연 로딩합니다. Replay는 3D 장면과
+   실제 축척 XY Capsule top-view를 함께 제공하며 ARM_ENVELOPE는 적색, TCP_RADIUS는
+   황색으로 구분합니다.
 
 일반 frame 상한은 2,000개입니다. 매우 긴 작업에서는 몇 초 이상의 간격이 권장될
 수 있습니다. Replay 생성 전에도 입력 signature를 다시 확인하므로 Validation 이후
 원본 세 파일이 바뀌었다면 기존 결과에 Replay를 붙이지 않습니다.
 
+현재 UI는 interactive `replay.html`만 생성하며 GIF, Animated WebP, MP4 변환 기능은
+포함하지 않습니다. 애니메이션 이미지가 필요하면 브라우저에서 Replay frame을 캡처한
+뒤 별도 encoder로 결합해야 합니다. 긴 작업은 먼저 Replay frame 간격을 늘려 전체
+프레임 수를 줄이는 것이 좋습니다.
+
 ## 결과 이후 동작
 
-- `같은 입력 다시 실행`: 세 입력 signature를 다시 확인한 후 새 output 폴더에서 실행
-- `다른 입력 선택`: 입력 준비 화면으로 돌아가 새 폴더 지정
+- `처음으로 돌아가기`: 입력 준비 화면으로 돌아가 폴더를 다시 확인하거나 새 폴더 지정
 - `최근 결과 보기`: 현재 입력 signature와 지원하는 결과 schema가 일치하는 완료 결과가 있을 때만 표시
 
+정상 Validation 결과에는 `validation_inputs.json` 입력 지문이 항상 기록됩니다. 입력 지문
+도입 전에 CLI로 생성한 schema 2.0 결과는 기록된 입력 경로가 현재 폴더와 같고 결과 생성
+이후 입력 파일이 수정되지 않았을 때 최근 결과로 표시합니다.
+
 기존 결과 폴더는 자동 삭제하거나 덮어쓰지 않습니다.
+결과 schema `1.1`은 현재 Capsule 형식이 아니므로 최근 결과로 열지 않고 재실행 안내를
+표시합니다.
 
 ## 문제 해결
 
@@ -223,6 +253,6 @@ process가 실행 중이면 동시에 새 Validation을 시작하지 않습니�
 
 ### 결과에 Replay가 없음
 
-정상 동작입니다. 산출물 탭에서 생성하거나 CLI에 `--replay`를 명시하십시오.
+정상 동작입니다. 파일·Replay 탭에서 생성하거나 CLI에 `--replay`를 명시하십시오.
 
 [문서 안내로 돌아가기](README.md)

@@ -194,10 +194,10 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 | 그룹 | 주요 역할 |
 |---|---|
 | `simulation` | 적응형 충돌 샘플의 시간·TCP 이동 간격, 이벤트 병합과 처리 묶음 크기 |
-| `robots` | ID 1·2·3의 고정 Base 위치, 선택적 Home TCP 위치, TCP 안전 반경과 3D Reach 반경 |
+| `robots` | ID 1·2·3의 고정 Base, 선택적 Home TCP, TCP 반경, 2D Arm Capsule 반경과 3D Reach 반경 |
 | `process` | Deposition(적층)·Travel(비적층 이동) 기준 속도, 레이어 높이, 비드 폭, 빌드 평면과 TCP Z 해석 기준 |
 | `workspace` | World XY 평면에서 파트를 적층할 수 있는 필수 원형 영역 |
-| `collision` | Base–TCP 교차, TCP 반경, 경계 접촉 및 기하 오차 |
+| `collision` | Arm Capsule 활성화·공통 안전거리, TCP 반경, 경계 접촉 및 기하 오차 |
 | `validation` | 대기 위치, layer Z, 속도, STL 검사 정책 |
 | `shape_validation` | coverage, overfill, IoU 및 실패 layer 기준 |
 | `output` | JSON, CSV, STL, PNG, HTML 결과 저장 설정 |
@@ -233,15 +233,26 @@ workspace:
 
 ## 8. 충돌 해석에 필요한 알고리즘 주의사항
 
-Validator 1.0은 각 로봇을 Base에서 TCP까지의 XY 선분으로 단순화한다.
+Validator 1.0은 각 로봇을 Base에서 TCP까지의 XY 중심선과 폭이 있는 2D Capsule로
+단순화한다. 각 Robot의 `arm_envelope_radius_mm`은 물리적 대표 반경이며 전체 폭은
+2배다. 두 Robot의 요구 중심선 간격은 다음과 같다.
+
+```text
+radius_A + radius_B + collision.arm_clearance_mm
+```
 
 - 모드와 관계없이 `T`, `D`, `W` 모든 시간에 충돌을 검사한다.
-- Base–TCP XY 선분 교차와 TCP 간 XY 거리를 검사한다.
+- 두 Base–TCP 유한 선분의 XY 최단거리에서 Capsule 반경과 공통 안전거리를 뺀
+  safety margin 및 TCP 간 XY 거리를 검사한다.
 - 이 충돌 모델은 Z 높이 차이를 사용하지 않는 보수적 top-view 판정이다.
 - 대기 중인 로봇도 공간에서 사라지지 않는다.
 - 먼저 종료한 로봇의 마지막 주차 위치도 전체 makespan까지 충돌 검사 대상이다.
 
 따라서 알고리즘은 적층 순서뿐 아니라 travel 경로, wait 위치, 시간 동기화, 최종 주차 위치까지 결정해야 한다.
+
+구형 `check_arm_crossing` Config나 Robot별 `arm_envelope_radius_mm`이 없는 Config는
+자동 변환하지 않고 실행 불가로 처리한다. `Multi_robot_DED_NCO` 등 외부 알고리즘의
+Exporter도 새 필수 필드를 내보내도록 별도로 갱신해야 한다.
 
 ## 9. 알고리즘 결과를 CSV로 변환하는 방법
 

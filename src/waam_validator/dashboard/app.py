@@ -71,6 +71,7 @@ _ARTIFACT_LABELS = {
     "gantt.png": "Gantt 이미지",
     "shape_metrics_by_layer.png": "Layer 지표 이미지",
     "worst_layer_comparison.png": "최악 Layer 비교 이미지",
+    "arm_envelope_worst_case.png": "Arm Envelope 최악 시점 이미지",
     "replay.html": "3D Replay",
     "replay_manifest.json": "Replay 생성 정보",
     "error.json": "Error JSON",
@@ -84,6 +85,12 @@ def _section(payload: JsonDict, name: str) -> JsonDict:
 
 def _number(payload: JsonDict, section: str, field: str) -> float | None:
     raw = _section(payload, section).get(field)
+    return float(raw) if isinstance(raw, int | float) else None
+
+
+def _nested_number(payload: JsonDict, section: str, subsection: str, field: str) -> float | None:
+    nested = _section(payload, section).get(subsection)
+    raw = nested.get(field) if isinstance(nested, dict) else None
     return float(raw) if isinstance(raw, int | float) else None
 
 
@@ -262,16 +269,19 @@ def _robot_table(rows: list[JsonDict]) -> html.Div:
 
 
 def _collision_gauge(payload: JsonDict) -> go.Figure:
-    distance = _number(payload, "collision", "minimum_tcp_distance_mm")
-    required = _number(payload, "collision", "minimum_required_distance_mm")
+    distance = _nested_number(payload, "collision", "tcp_radius", "minimum_distance_mm")
+    required = _nested_number(
+        payload, "collision", "tcp_radius", "required_distance_at_minimum_mm"
+    )
     if distance is None or required is None:
         return _empty_figure("TCP 거리 지표가 없습니다", height=300)
     maximum = max(distance, required) * 1.35 or 1.0
     collision = payload.get("collision", {})
     collision_data = collision if isinstance(collision, dict) else {}
-    checks = collision_data.get("checks_enabled", {})
-    tcp_enabled = bool(checks.get("tcp_radius", True)) if isinstance(checks, dict) else True
-    tcp_events = int(collision_data.get("tcp_radius_event_count", 0) or 0)
+    tcp = collision_data.get("tcp_radius", {})
+    tcp_data = tcp if isinstance(tcp, dict) else {}
+    tcp_enabled = bool(tcp_data.get("enabled", False))
+    tcp_events = int(tcp_data.get("event_count", 0) or 0)
     passed = tcp_events == 0
     bar_color = "#21d4a3" if passed else "#ff6376"
     if not tcp_enabled:
@@ -303,6 +313,56 @@ def _collision_gauge(payload: JsonDict) -> go.Figure:
     return _style_figure(figure, height=300)
 
 
+def _arm_envelope_gauge(payload: JsonDict) -> go.Figure:
+    distance = _nested_number(
+        payload, "collision", "arm_envelope", "centerline_distance_at_worst_mm"
+    )
+    required = _nested_number(
+        payload, "collision", "arm_envelope", "required_distance_at_worst_mm"
+    )
+    margin = _nested_number(
+        payload, "collision", "arm_envelope", "minimum_safety_margin_mm"
+    )
+    if distance is None or required is None or margin is None:
+        return _empty_figure("Arm Envelope 지표가 없습니다", height=300)
+    arm = payload.get("collision", {}).get("arm_envelope", {})
+    arm_data = arm if isinstance(arm, dict) else {}
+    enabled = bool(arm_data.get("enabled", False))
+    passed = bool(arm_data.get("passed", False))
+    color = "#21d4a3" if passed else "#ff6376"
+    if not enabled:
+        color = "#8fa3b8"
+    maximum = max(distance, required) * 1.35 or 1.0
+    figure = go.Figure(
+        go.Indicator(
+            mode="gauge+number+delta",
+            value=distance,
+            number={"suffix": " mm", "font": {"color": "#e8f1fb"}},
+            delta={"reference": required, "suffix": " mm"},
+            title={
+                "text": f"Arm 중심선 거리 · 안전 여유 {margin:,.2f} mm",
+                "font": {"color": "#8fa3b8"},
+            },
+            gauge={
+                "axis": {"range": [0, maximum], "tickcolor": "#8fa3b8"},
+                "bar": {"color": color},
+                "bgcolor": "#0d1927",
+                "bordercolor": "#20344b",
+                "steps": [
+                    {"range": [0, required], "color": "rgba(255,99,118,.16)"},
+                    {"range": [required, maximum], "color": "rgba(33,212,163,.08)"},
+                ],
+                "threshold": {
+                    "line": {"color": "#f5b942", "width": 4},
+                    "thickness": 0.8,
+                    "value": required,
+                },
+            },
+        )
+    )
+    return _style_figure(figure, height=300)
+
+
 def _collision_timeline(rows: list[JsonDict]) -> go.Figure:
     if not rows:
         return _empty_figure("충돌 이벤트 없음", height=300)
@@ -311,7 +371,10 @@ def _collision_timeline(rows: list[JsonDict]) -> go.Figure:
         f"{row.get('type', 'EVENT')} · R{row.get('robot_a')}-R{row.get('robot_b')}"
         for row in limited
     ]
-    colors = ["#ff6376" if row.get("type") == "ARM_CROSS" else "#f5b942" for row in limited]
+    colors = [
+        "#ff6376" if row.get("type") == "ARM_ENVELOPE" else "#f5b942"
+        for row in limited
+    ]
     figure = go.Figure(
         go.Bar(
             y=labels,
@@ -335,7 +398,10 @@ def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.16,
-        subplot_titles=("Coverage · IoU", "Underfill · Overfill"),
+        subplot_titles=(
+            "Coverage · IoU (높을수록 좋음)",
+            "Layer 오차율 확대 (낮을수록 좋음)",
+        ),
     )
     for field, name, color in (
         ("coverage", "Coverage", "#21d4a3"),
@@ -346,9 +412,10 @@ def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
                 x=x_values,
                 y=[float(row.get(field, 0.0) or 0.0) for row in rows],
                 name=name,
-                mode="lines",
+                mode="lines+markers",
                 line={"color": color, "width": 2},
-                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.2%}}<extra></extra>",
+                marker={"size": 5},
+                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.4%}}<extra></extra>",
             ),
             row=1,
             col=1,
@@ -356,27 +423,51 @@ def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
     for field, name, color in (
         ("underfill_ratio", "Underfill", "#f5b942"),
         ("overfill_ratio", "Overfill", "#ff6376"),
+        ("iou_loss", "IoU 손실", "#a78bfa"),
     ):
+        values = [
+            max(0.0, 1.0 - float(row.get("iou", 0.0) or 0.0))
+            if field == "iou_loss"
+            else float(row.get(field, 0.0) or 0.0)
+            for row in rows
+        ]
         figure.add_trace(
             go.Scatter(
                 x=x_values,
-                y=[float(row.get(field, 0.0) or 0.0) for row in rows],
+                y=values,
                 name=name,
-                mode="lines",
+                mode="lines+markers",
                 line={"color": color, "width": 1.6},
-                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.2%}}<extra></extra>",
+                marker={"size": 4},
+                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.4%}}<extra></extra>",
             ),
             row=2,
             col=1,
         )
     iou_min = thresholds.get("minimum_layer_iou")
-    if isinstance(iou_min, int | float):
+    iou_values = [float(row.get("iou", 0.0) or 0.0) for row in rows]
+    match_values = iou_values + [float(row.get("coverage", 0.0) or 0.0) for row in rows]
+    if isinstance(iou_min, int | float) and min(iou_values) <= float(iou_min) + 0.05:
         figure.add_hline(
             y=float(iou_min),
             line_dash="dot",
             line_color="#5caeff",
             annotation_text="Layer IoU 기준",
             annotation_position="bottom right",
+            row=1,
+            col=1,
+        )
+    elif isinstance(iou_min, int | float):
+        figure.add_annotation(
+            text=f"Layer IoU 기준 ≥ {float(iou_min):.0%} · 현재 확대 범위 밖",
+            x=1.0,
+            y=1.0,
+            xref="x domain",
+            yref="y domain",
+            xanchor="right",
+            yanchor="top",
+            showarrow=False,
+            font={"color": "#8fa3b8", "size": 11},
             row=1,
             col=1,
         )
@@ -394,8 +485,30 @@ def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
             row=1,
             col=1,
         )
-    figure.update_yaxes(title_text="일치 비율", tickformat=".1%", row=1, col=1)
-    figure.update_yaxes(title_text="오차 비율", tickformat=".1%", row=2, col=1)
+    if min(match_values) > 0.95:
+        spread = max(match_values) - min(match_values)
+        padding = max(0.0001, spread * 0.2)
+        figure.update_yaxes(
+            range=[max(0.0, min(match_values) - padding), min(1.0001, 1.0 + padding)],
+            row=1,
+            col=1,
+        )
+    error_max = max(
+        [
+            float(row.get("underfill_ratio", 0.0) or 0.0)
+            for row in rows
+        ]
+        + [float(row.get("overfill_ratio", 0.0) or 0.0) for row in rows]
+        + [max(0.0, 1.0 - value) for value in iou_values]
+    )
+    figure.update_yaxes(title_text="일치율", tickformat=".3%", row=1, col=1)
+    figure.update_yaxes(
+        title_text="오차율 (확대)",
+        tickformat=".3%",
+        range=[0.0, max(0.0001, error_max * 1.15)],
+        row=2,
+        col=1,
+    )
     figure.update_xaxes(title_text="Layer 번호", row=2, col=1)
     return _style_figure(figure, height=460)
 
@@ -403,12 +516,24 @@ def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
 def _issues_content(rows: list[JsonDict], payload: JsonDict) -> html.Div:
     if not rows:
         warnings = payload.get("warnings", [])
-        if isinstance(warnings, list) and warnings:
+        errors = payload.get("errors", [])
+        warning_items = warnings if isinstance(warnings, list) else []
+        error_items = errors if isinstance(errors, list) else []
+        if warning_items or error_items:
             return html.Div(
-                [html.Div(str(item), className="issue-item issue-warning") for item in warnings],
+                [
+                    *[
+                        html.Div(str(item), className="issue-item issue-warning")
+                        for item in warning_items
+                    ],
+                    *[
+                        html.Div(str(item), className="issue-item issue-error")
+                        for item in error_items
+                    ],
+                ],
                 className="issue-list",
             )
-        return html.Div("경고와 비치명 오류가 없습니다.", className="empty-state success-border")
+        return html.Div("추가 판정 기록이 없습니다.", className="empty-state success-border")
     return html.Div(
         [
             html.Div(
@@ -482,6 +607,7 @@ def _gallery_content(job: JobRecord, run: RunRecord) -> list[html.Figure]:
         "gantt.png",
         "shape_metrics_by_layer.png",
         "worst_layer_comparison.png",
+        "arm_envelope_worst_case.png",
     ):
         if (run.directory / filename).is_file():
             gallery.append(
@@ -593,9 +719,13 @@ def _config_inspection(config: JsonDict) -> Any:
             f"{process.get('arc_on_time_s', '—')} / {process.get('arc_off_time_s', '—')} s",
         ),
         (
-            "Base–TCP 선분 교차 / TCP 안전 반경 검사",
-            f"{collision.get('check_arm_crossing', '—')} / "
+            "2D Arm Capsule / TCP 안전 반경 검사",
+            f"{collision.get('check_arm_envelope', '—')} / "
             f"{collision.get('check_tcp_radius', '—')}",
+        ),
+        (
+            "Arm Capsule 공통 표면 안전거리",
+            f"{collision.get('arm_clearance_mm', '—')} mm",
         ),
         ("경계 접촉을 충돌로 판정", collision.get("touching_is_collision", "—")),
         (
@@ -690,11 +820,37 @@ def _config_inspection(config: JsonDict) -> Any:
             )
             rows.append(
                 (
-                    f"Robot {robot.get('id')} TCP 안전 반경 / Reach 반경",
+                    f"Robot {robot.get('id')} TCP / Arm Capsule / Reach 반경",
                     f"{robot.get('tcp_radius_mm', '—')} / "
+                    f"{robot.get('arm_envelope_radius_mm', '—')} / "
                     f"{robot.get('reach_radius_mm', '—')} mm",
                 )
             )
+            arm_radius = robot.get("arm_envelope_radius_mm")
+            if isinstance(arm_radius, int | float):
+                rows.append(
+                    (
+                        f"Robot {robot.get('id')} Arm Capsule 전체 폭",
+                        f"{2.0 * float(arm_radius):,.1f} mm",
+                    )
+                )
+    robot_rows = [robot for robot in robots if isinstance(robot, dict)]
+    clearance = collision.get("arm_clearance_mm")
+    if isinstance(clearance, int | float):
+        for left_index, left in enumerate(robot_rows):
+            for right in robot_rows[left_index + 1 :]:
+                left_radius = left.get("arm_envelope_radius_mm")
+                right_radius = right.get("arm_envelope_radius_mm")
+                if isinstance(left_radius, int | float) and isinstance(
+                    right_radius, int | float
+                ):
+                    rows.append(
+                        (
+                            f"R{left.get('id')}–R{right.get('id')} 요구 중심선 간격",
+                            f"{float(left_radius) + float(right_radius) + float(clearance):,.1f} "
+                            "mm",
+                        )
+                    )
     return _detail_rows(rows)
 
 
@@ -920,7 +1076,9 @@ def _build_layout(jobs_root: Path, jobs: list[JobRecord]) -> html.Div:
         {"name": "시작 [s]", "id": "start_s", "type": "numeric"},
         {"name": "종료 [s]", "id": "end_s", "type": "numeric"},
         {"name": "지속 [s]", "id": "duration_s", "type": "numeric"},
-        {"name": "최소 TCP [mm]", "id": "min_tcp_distance_mm", "type": "numeric"},
+        {"name": "최소 거리 [mm]", "id": "minimum_distance_mm", "type": "numeric"},
+        {"name": "요구 거리 [mm]", "id": "required_distance_mm", "type": "numeric"},
+        {"name": "최소 여유 [mm]", "id": "minimum_safety_margin_mm", "type": "numeric"},
     ]
     layer_columns = [
         {"name": "Layer", "id": "layer_index", "type": "numeric"},
@@ -1201,8 +1359,8 @@ def _build_layout(jobs_root: Path, jobs: list[JobRecord]) -> html.Div:
                                                                             "value": "ALL",
                                                                         },
                                                                         {
-                                                                            "label": "ARM_CROSS",
-                                                                            "value": "ARM_CROSS",
+                                                                            "label": "ARM_ENVELOPE",
+                                                                            "value": "ARM_ENVELOPE",
                                                                         },
                                                                         {
                                                                             "label": "TCP_RADIUS",
@@ -2068,8 +2226,10 @@ def create_dashboard_app(
             )
         makespan = _number(payload, "schedule", "makespan_s")
         collisions = _number(payload, "collision", "collision_event_count")
-        min_tcp = _number(payload, "collision", "minimum_tcp_distance_mm")
-        required_tcp = _number(payload, "collision", "minimum_required_distance_mm")
+        min_tcp = _nested_number(payload, "collision", "tcp_radius", "minimum_distance_mm")
+        required_tcp = _nested_number(
+            payload, "collision", "tcp_radius", "required_distance_at_minimum_mm"
+        )
         coverage = _number(payload, "shape", "coverage")
         iou = _number(payload, "shape", "iou")
         failed = _number(payload, "shape", "failed_layer_count")

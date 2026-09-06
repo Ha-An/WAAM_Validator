@@ -7,9 +7,12 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import psutil
 import pytest
 import yaml
+
+from waam_validator.collision.geometry2d import check_arm_envelope_xy_batch
 
 
 @pytest.mark.performance
@@ -59,9 +62,30 @@ def test_100k_rows_under_512_mb(fixture_root: Path, tmp_path: Path) -> None:
         time.sleep(0.02)
     stdout, stderr = process.communicate()
     elapsed_s = time.perf_counter() - started
+    batch_tcp_a = np.column_stack(
+        (np.linspace(-500.0, 500.0, 100_000), np.full(100_000, 100.0))
+    )
+    batch_tcp_b = np.column_stack(
+        (np.linspace(500.0, -500.0, 100_000), np.full(100_000, -100.0))
+    )
+    capsule_started = time.perf_counter()
+    capsule_result = check_arm_envelope_xy_batch(
+        np.array([-1000.0, -600.0]),
+        batch_tcp_a,
+        100.0,
+        np.array([1000.0, -600.0]),
+        batch_tcp_b,
+        100.0,
+        50.0,
+        1.0e-6,
+        True,
+    )
+    capsule_batch_s = time.perf_counter() - capsule_started
     print(
-        f"PERFORMANCE rows=100000 peak_rss_mib={peak_rss / (1024**2):.2f} elapsed_s={elapsed_s:.2f}"
+        f"PERFORMANCE rows=100000 peak_rss_mib={peak_rss / (1024**2):.2f} "
+        f"elapsed_s={elapsed_s:.2f} capsule_batch_100k_s={capsule_batch_s:.4f}"
     )
     assert process.returncode == 1, stderr
     assert '"status":"FAIL"' in stdout
     assert peak_rss < 512 * 1024 * 1024
+    assert len(capsule_result.safety_margin_mm) == 100_000

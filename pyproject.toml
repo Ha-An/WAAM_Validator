@@ -63,7 +63,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["waam_validator"]
+files = ["src/waam_validator"]
 strict = true
 warn_unreachable = true
 

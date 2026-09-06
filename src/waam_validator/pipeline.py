@@ -15,7 +15,7 @@ from .errors import (
     ValidationMessages,
     WaamValidatorError,
 )
-from .models import ReachMetrics, ShapeMetrics, ValidationResult
+from .models import CollisionSimulationResult, ReachMetrics, ShapeMetrics, ValidationResult
 from .progress import ProgressCallback, ValidationProgress
 from .reporting.writers import (
     configure_file_logging,
@@ -97,8 +97,7 @@ def _build_failure_reasons(
     shape: ShapeMetrics,
     reach: ReachMetrics,
     messages: ValidationMessages,
-    arm_event_count: int,
-    tcp_event_count: int,
+    collision: CollisionSimulationResult,
     config: Config,
 ) -> list[str]:
     reasons: list[str] = []
@@ -113,10 +112,15 @@ def _build_failure_reasons(
                 f"{item.maximum_reach_mm:.3f} mm exceeds configured "
                 f"{item.reach_radius_mm:.3f} mm."
             )
-    if arm_event_count:
-        reasons.append(f"ARM_CROSS: {arm_event_count} event(s) detected.")
-    if tcp_event_count:
-        reasons.append(f"TCP_RADIUS: {tcp_event_count} event(s) detected.")
+    if collision.arm_envelope_event_count:
+        reasons.append(
+            f"ARM_ENVELOPE: {collision.arm_envelope_event_count} event(s) detected; "
+            f"worst safety margin {collision.minimum_arm_safety_margin_mm:.3f} mm."
+        )
+    if collision.tcp_radius_event_count:
+        reasons.append(
+            f"TCP_RADIUS: {collision.tcp_radius_event_count} event(s) detected."
+        )
     thresholds = config.shape_validation
     if shape.coverage < thresholds.minimum_overall_coverage:
         reasons.append(
@@ -229,9 +233,23 @@ def run_validation(
             collision.sample_count,
             len(collision.events),
         )
+        LOGGER.info(
+            "Arm Envelope worst case: margin=%.6f mm, centerline=%.6f mm, "
+            "required=%.6f mm, pair=R%d-R%d, time=%.6f s",
+            collision.minimum_arm_safety_margin_mm,
+            collision.arm_centerline_distance_at_worst_mm,
+            collision.arm_required_distance_at_worst_mm,
+            collision.minimum_arm_pair[0],
+            collision.minimum_arm_pair[1],
+            collision.minimum_arm_time_s,
+        )
 
-        if not config.collision.check_arm_crossing:
-            messages.warning("ARM_CROSS_CHECK_DISABLED", "Base–TCP crossing check is disabled.")
+        if not config.collision.check_arm_envelope:
+            messages.warning(
+                "ARM_ENVELOPE_CHECK_DISABLED",
+                "2D Base-to-TCP Capsule collision check is disabled; minimum safety "
+                "margin is still reported as a metric.",
+            )
         if not config.collision.check_tcp_radius:
             messages.warning("TCP_RADIUS_CHECK_DISABLED", "TCP radius check is disabled.")
 
@@ -320,13 +338,12 @@ def run_validation(
             shape,
             reach,
             messages,
-            collision.arm_cross_event_count,
-            collision.tcp_radius_event_count,
+            collision,
             config,
         )
         status = "PASS" if not failure_reasons else "FAIL"
         LOGGER.info(
-            "Validation findings: %d failure reasons, %d errors, %d warnings",
+            "Validation findings: %d failure reasons, %d error-severity issues, %d warnings",
             len(failure_reasons),
             len(messages.errors),
             len(messages.warnings),
@@ -348,7 +365,7 @@ def run_validation(
             errors=messages.errors,
             failure_reasons=failure_reasons,
             checks_enabled={
-                "arm_crossing": config.collision.check_arm_crossing,
+                "arm_envelope": config.collision.check_arm_envelope,
                 "tcp_radius": config.collision.check_tcp_radius,
             },
         )

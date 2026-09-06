@@ -49,9 +49,10 @@ Validator는 세 로봇의 원본 timestamp 합집합을 모두 보존한 뒤
 | 필드 | 타입·제약 | 상세 의미 |
 | --- | --- | --- |
 | `id` | `1`, `2`, `3` | `trajectory.csv`의 `robot_id`와 Config 로봇을 연결하는 식별자입니다. |
-| `base_xyz_mm` | float 3개 | World 좌표계에서 움직이지 않는 **로봇 설치 기준점(Base)**입니다. Reach 거리는 이 점부터 TCP까지의 3차원 거리로 계산하고, 단순 팔 충돌은 Base에서 TCP까지의 XY 선분으로 검사합니다. trajectory의 시작 위치가 아닙니다. |
+| `base_xyz_mm` | float 3개 | World 좌표계에서 움직이지 않는 **로봇 설치 기준점(Base)**입니다. Reach 거리는 이 점부터 TCP까지의 3차원 거리로 계산하고, 2D Arm Capsule 중심선의 고정 끝점으로 사용합니다. trajectory의 시작 위치가 아닙니다. |
 | `home_xyz_mm` | float 3개 또는 생략 | World 좌표계에서 공구 기준점인 **TCP의 명목 대기 위치(Home)**입니다. 경로 생성기가 작업 시작·종료점이나 안전 대기점으로 사용할 수 있고 UI에 별도 표식으로 표시됩니다. Base와 달리 로봇 본체의 설치점이 아니며, 현재 Validator는 trajectory 시작·종료 좌표가 Home과 같은지를 강제하지 않습니다. |
 | `tcp_radius_mm` | float, `> 0` | TCP 주변의 충돌 판정용 XY 안전 반경입니다. 실제 점의 물리적 반지름이 아니라 토치·엔드 이펙터와 안전 여유를 대표합니다. 두 로봇의 요구 중심 간격은 두 `tcp_radius_mm`의 합입니다. 적층 비드 폭이나 Reach에는 영향을 주지 않습니다. |
+| `arm_envelope_radius_mm` | float, `> 0` | Base에서 현재 TCP까지의 XY 중심선을 둘러싸는 Capsule의 물리적 대표 반경입니다. 전체 폭은 이 값의 2배입니다. 관절 자세를 재현하는 링크 반경이 아니라 팔이 점유한다고 보수적으로 가정할 평면 폭입니다. 공통 추가 안전거리와는 분리해 설정합니다. |
 | `reach_radius_mm` | float, `> 0` | Base를 중심으로 TCP가 도달할 수 있다고 허용하는 3차원 구의 반경입니다. 모든 Deposition·Travel·Wait 절점을 검사하며 초과하면 실행 가능한 정상 `FAIL`입니다. |
 
 Base와 Home의 핵심 차이는 다음과 같습니다.
@@ -63,7 +64,7 @@ Reach 거리 = ||TCP - Base||₂
 ```
 
 세 Base 좌표는 서로 달라야 하고, XY 투영이 면적을 갖는 삼각형을 이루어야 합니다.
-현재 단순 팔 교차와 TCP 안전 반경 검사는 XY 평면에서 수행합니다. 따라서 Z가 다른
+현재 Arm Capsule과 TCP 안전 반경 검사는 XY 평면에서 수행합니다. 따라서 Z가 다른
 공구도 XY가 가까우면 보수적으로 충돌 판정을 받을 수 있습니다.
 
 ## `process`: 공정과 경로 생성 기준값
@@ -100,13 +101,19 @@ Deposition(재료를 적층하며 이동) 구간은 중심선뿐 아니라 명�
 
 | 필드 | 타입·제약 | 상세 의미 |
 | --- | --- | --- |
-| `check_arm_crossing` | bool | 각 로봇을 Base에서 현재 TCP까지의 XY 선분으로 단순화하고 두 선분의 교차를 충돌로 검사할지 정합니다. 실제 관절·링크 형상 검사는 아닙니다. |
+| `check_arm_envelope` | bool | Base–TCP XY 중심선에 `arm_envelope_radius_mm` 폭을 준 Capsule 사이의 안전 여유를 충돌로 판정할지 정합니다. 꺼도 최소 안전 여유는 지표로 계산합니다. |
+| `arm_clearance_mm` | float, `>= 0` | 두 물리 Capsule 표면 사이에 추가로 요구하는 공통 안전거리입니다. Pair의 요구 중심선 거리는 `radius_A + radius_B + arm_clearance_mm`입니다. 시각화의 점선 판정 외곽선에는 각 Capsule에 절반씩 더해 표시합니다. |
 | `check_tcp_radius` | bool | 두 TCP의 XY 거리가 각 로봇 `tcp_radius_mm` 합보다 가까운지 검사할지 정합니다. 꺼도 최소 TCP 거리는 지표로 계산합니다. |
-| `touching_is_collision` | bool | 선분이 끝점에서 닿거나 TCP 거리가 정확히 요구 안전거리와 같을 때 충돌로 포함할지 정합니다. `true`이면 경계 접촉도 충돌입니다. |
-| `geometry_epsilon_mm` | float, `> 0` | 선분 교차, 공선, 접점과 Reach 경계 계산에서 부동소수점 오차를 흡수하기 위한 길이 허용치입니다. 물리적 안전 여유 대신 사용하면 안 됩니다. |
+| `touching_is_collision` | bool | Arm 안전 여유 또는 TCP 거리가 정확히 판정 경계와 같을 때 충돌로 포함할지 정합니다. `true`이면 경계 접촉도 충돌입니다. |
+| `geometry_epsilon_mm` | float, `> 0` | Arm Capsule 접촉 경계와 Reach 경계 계산에서 부동소수점 오차를 흡수하기 위한 길이 허용치입니다. 물리적 안전 여유 대신 사용하면 안 됩니다. |
 
-검사를 끄면 해당 항목은 `FAIL` 원인이 되지 않고 비활성화 경고가 기록됩니다. 두
-TCP 반경이 각각 100 mm라면 요구 중심 간격은 200 mm입니다.
+검사를 끄면 해당 항목은 `FAIL` 원인이 되지 않고 비활성화 경고가 기록됩니다. 예를
+들어 Arm 반경이 각각 100 mm이고 공통 안전거리가 50 mm라면 요구 중심선 간격은
+250 mm입니다. 실제 Capsule 표면 간격이 50 mm일 때 안전 여유가 0 mm입니다.
+
+구형 `check_arm_crossing` 또는 `arm_envelope_radius_mm`이 없는 Robot 설정은 자동
+변환하지 않고 Config 오류로 거부합니다. 기존 생성 알고리즘은 각 Robot의 대표 폭과
+공통 안전거리를 명시하도록 연동을 갱신해야 합니다.
 
 ## `validation`: 입력 의미와 공정 허용 오차
 
@@ -175,16 +182,19 @@ robots:
     base_xyz_mm: [-1400.0, 0.0, 0.0]
     home_xyz_mm: [-1000.0, 0.0, 1700.0]
     tcp_radius_mm: 100.0
+    arm_envelope_radius_mm: 100.0
     reach_radius_mm: 2000.0
   - id: 2
     base_xyz_mm: [700.0, -1212.435565, 0.0]
     home_xyz_mm: [500.0, -866.025404, 1700.0]
     tcp_radius_mm: 100.0
+    arm_envelope_radius_mm: 100.0
     reach_radius_mm: 2000.0
   - id: 3
     base_xyz_mm: [700.0, 1212.435565, 0.0]
     home_xyz_mm: [500.0, 866.025404, 1700.0]
     tcp_radius_mm: 100.0
+    arm_envelope_radius_mm: 100.0
     reach_radius_mm: 2000.0
 process:
   deposition_speed_mm_s: 8.0
@@ -201,7 +211,8 @@ workspace:
   center_xy_mm: [0.0, 0.0]
   radius_mm: 700.0
 collision:
-  check_arm_crossing: true
+  check_arm_envelope: true
+  arm_clearance_mm: 50.0
   check_tcp_radius: true
   touching_is_collision: true
   geometry_epsilon_mm: 1.0e-6

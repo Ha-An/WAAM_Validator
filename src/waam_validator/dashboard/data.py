@@ -33,6 +33,7 @@ ALLOWED_ARTIFACTS: Final = frozenset(
         "gantt.png",
         "shape_metrics_by_layer.png",
         "worst_layer_comparison.png",
+        "arm_envelope_worst_case.png",
         "replay.html",
         "replay_manifest.json",
         "dashboard_status.json",
@@ -66,7 +67,15 @@ CSV_COLUMNS: Final = {
         "start_s",
         "end_s",
         "duration_s",
-        "min_tcp_distance_mm",
+        "minimum_distance_mm",
+        "required_distance_mm",
+        "minimum_safety_margin_mm",
+        "minimum_capsule_surface_clearance_mm",
+        "minimum_distance_time_s",
+        "closest_a_x_mm",
+        "closest_a_y_mm",
+        "closest_b_x_mm",
+        "closest_b_y_mm",
     ),
     "layer_metrics.csv": (
         "layer_index",
@@ -212,7 +221,7 @@ def load_latest_run(job_dir: Path) -> RunRecord | None:
         return RunRecord(run_dir, status, payload, _completed_label(run_dir))
     except DashboardDataError as exc:
         payload = {
-            "schema_version": "1.1",
+            "schema_version": "2.0",
             "status": "ERROR",
             "code": "DASHBOARD_DATA_ERROR",
             "message": str(exc),

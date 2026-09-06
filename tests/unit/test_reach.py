@@ -48,6 +48,20 @@ def test_config_requires_workspace_positive_reach_and_no_version_field(
     negative_reach = yaml.safe_load(source.read_text(encoding="utf-8"))
     negative_reach["robots"][0]["reach_radius_mm"] = -1.0
     cases.append(negative_reach)
+    missing_arm_radius = yaml.safe_load(source.read_text(encoding="utf-8"))
+    missing_arm_radius["robots"][0].pop("arm_envelope_radius_mm")
+    cases.append(missing_arm_radius)
+    zero_arm_radius = yaml.safe_load(source.read_text(encoding="utf-8"))
+    zero_arm_radius["robots"][0]["arm_envelope_radius_mm"] = 0.0
+    cases.append(zero_arm_radius)
+    negative_clearance = yaml.safe_load(source.read_text(encoding="utf-8"))
+    negative_clearance["collision"]["arm_clearance_mm"] = -1.0
+    cases.append(negative_clearance)
+    legacy_collision = yaml.safe_load(source.read_text(encoding="utf-8"))
+    legacy_collision["collision"]["check_arm_crossing"] = legacy_collision["collision"].pop(
+        "check_arm_envelope"
+    )
+    cases.append(legacy_collision)
 
     for index, data in enumerate(cases):
         path = tmp_path / f"invalid-{index}.yaml"
@@ -87,10 +101,12 @@ def test_reach_violation_is_normal_fail_and_is_written(fixture_root: Path, tmp_p
     assert result.reach.passed is False
     assert any(reason.startswith("ROBOT_REACH: R1") for reason in result.failure_reasons)
     summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
-    assert summary["schema_version"] == "1.1"
+    assert summary["schema_version"] == "2.0"
     assert summary["validator_version"] == "1.0"
     assert summary["reach"]["passed"] is False
     robot_csv = (result.output_dir / "robot_metrics.csv").read_text(encoding="utf-8")
     assert "reach_violation_point_count" in robot_csv
     report = (result.output_dir / "validation_report.md").read_text(encoding="utf-8")
     assert "Robot Reach" in report
+    assert "Error-severity Validation Issues" in report
+    assert "pipeline ended with `ERROR`" in report

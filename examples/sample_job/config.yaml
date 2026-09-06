@@ -9,24 +9,36 @@ robots:
   - -1000.0
   - -600.0
   - 0.0
-  home_xyz_mm: [-1000.0, -600.0, 100.0]
+  home_xyz_mm:
+  - -1000.0
+  - -600.0
+  - 100.0
   tcp_radius_mm: 20.0
+  arm_envelope_radius_mm: 100.0
   reach_radius_mm: 2500.0
 - id: 2
   base_xyz_mm:
   - 1000.0
   - -600.0
   - 0.0
-  home_xyz_mm: [1000.0, -600.0, 100.0]
+  home_xyz_mm:
+  - 1000.0
+  - -600.0
+  - 100.0
   tcp_radius_mm: 20.0
+  arm_envelope_radius_mm: 100.0
   reach_radius_mm: 2500.0
 - id: 3
   base_xyz_mm:
   - 0.0
   - 1200.0
   - 0.0
-  home_xyz_mm: [0.0, 1200.0, 100.0]
+  home_xyz_mm:
+  - 0.0
+  - 1200.0
+  - 100.0
   tcp_radius_mm: 20.0
+  arm_envelope_radius_mm: 100.0
   reach_radius_mm: 2500.0
 process:
   deposition_speed_mm_s: 8.0
@@ -37,10 +49,13 @@ process:
   tcp_z_reference: top
 workspace:
   shape: circle_xy
-  center_xy_mm: [0.0, 0.0]
+  center_xy_mm:
+  - 0.0
+  - 0.0
   radius_mm: 250.0
 collision:
-  check_arm_crossing: true
+  check_arm_envelope: true
+  arm_clearance_mm: 50.0
   check_tcp_radius: true
   touching_is_collision: true
   geometry_epsilon_mm: 1.0e-06

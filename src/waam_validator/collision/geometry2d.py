@@ -1,175 +1,210 @@
-"""Robust small-scale 2D collision primitives."""
+"""Finite-segment 2D Capsule and TCP-radius collision primitives."""
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
+import numpy.typing as npt
 
-from ..models import SegmentIntersectionResult, TcpRadiusResult
-
-Point2D = tuple[float, float]
+from ..models import ArmEnvelopeResult, TcpRadiusResult
 
 
-def _point2(value: np.ndarray) -> Point2D:
-    """Copy a NumPy point into stable Python scalars at the API boundary."""
+@dataclass(slots=True, frozen=True)
+class ArmEnvelopeBatchResult:
+    collision: npt.NDArray[np.bool_]
+    centerline_distance_mm: npt.NDArray[np.float64]
+    required_distance_mm: float
+    safety_margin_mm: npt.NDArray[np.float64]
+    capsule_surface_clearance_mm: npt.NDArray[np.float64]
+    closest_a_xy_mm: npt.NDArray[np.float64]
+    closest_b_xy_mm: npt.NDArray[np.float64]
+
+
+def _point2(value: np.ndarray) -> tuple[float, float]:
     point = np.asarray(value, dtype=np.float64)
     return float(point[0]), float(point[1])
 
 
-def _orient(ax: float, ay: float, bx: float, by: float, cx: float, cy: float) -> float:
-    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-
-
-def _orientation_tolerance(ax: float, ay: float, bx: float, by: float, epsilon: float) -> float:
-    """Convert the configured linear tolerance to cross-product area units."""
-    return epsilon * max(math.hypot(bx - ax, by - ay), epsilon)
-
-
-def _on_segment(
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-    px: float,
-    py: float,
-    epsilon: float,
-) -> bool:
-    length = math.hypot(bx - ax, by - ay)
-    if length <= epsilon:
-        return math.hypot(px - ax, py - ay) <= epsilon
-    return (
-        abs(_orient(ax, ay, bx, by, px, py)) <= epsilon * length
-        and min(ax, bx) - epsilon <= px <= max(ax, bx) + epsilon
-        and min(ay, by) - epsilon <= py <= max(ay, by) + epsilon
+def _cross2d(
+    left: npt.NDArray[np.float64], right: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    result: npt.NDArray[np.float64] = (
+        left[..., 0] * right[..., 1] - left[..., 1] * right[..., 0]
     )
+    return result
 
 
-def _proper_intersection_point(
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-    cx: float,
-    cy: float,
-    dx: float,
-    dy: float,
-) -> tuple[float, float]:
-    direction_ax = bx - ax
-    direction_ay = by - ay
-    direction_bx = dx - cx
-    direction_by = dy - cy
-    denominator = direction_ax * direction_by - direction_ay * direction_bx
-    t_value = ((cx - ax) * direction_by - (cy - ay) * direction_bx) / denominator
-    return ax + t_value * direction_ax, ay + t_value * direction_ay
-
-
-def _collinear_overlap_midpoint(
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-    cx: float,
-    cy: float,
-    dx: float,
-    dy: float,
-    epsilon: float,
-) -> tuple[bool, bool, tuple[float, float] | None]:
-    direction_x = bx - ax
-    direction_y = by - ay
-    length = math.hypot(direction_x, direction_y)
-    if length <= epsilon:
-        direction_x = dx - cx
-        direction_y = dy - cy
-        length = math.hypot(direction_x, direction_y)
-        if length <= epsilon:
-            distance = math.hypot(ax - cx, ay - cy)
-            return distance <= epsilon, False, (ax, ay)
-        start_x, start_y, end_x, end_y = cx, cy, dx, dy
-        other_start_x, other_start_y, other_end_x, other_end_y = ax, ay, bx, by
-    else:
-        start_x, start_y, end_x, end_y = ax, ay, bx, by
-        other_start_x, other_start_y, other_end_x, other_end_y = cx, cy, dx, dy
-    unit_x = direction_x / length
-    unit_y = direction_y / length
-
-    def project(px: float, py: float) -> float:
-        return px * unit_x + py * unit_y
-
-    start_projection = project(start_x, start_y)
-    end_projection = project(end_x, end_y)
-    other_start_projection = project(other_start_x, other_start_y)
-    other_end_projection = project(other_end_x, other_end_y)
-    low = max(
-        min(start_projection, end_projection),
-        min(other_start_projection, other_end_projection),
+def _project_points_to_segments(
+    points: npt.NDArray[np.float64],
+    starts: npt.NDArray[np.float64],
+    ends: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    direction = ends - starts
+    denominator = np.einsum("ij,ij->i", direction, direction)
+    numerator = np.einsum("ij,ij->i", points - starts, direction)
+    parameter = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator),
+        where=denominator > 0.0,
     )
-    high = min(
-        max(start_projection, end_projection),
-        max(other_start_projection, other_end_projection),
-    )
-    if high < low - epsilon:
-        return False, False, None
-    midpoint_projection = (low + high) / 2.0
-    offset = midpoint_projection - start_projection
-    point = (
-        start_x + offset * unit_x,
-        start_y + offset * unit_y,
-    )
-    return True, high - low > epsilon, point
+    parameter = np.clip(parameter, 0.0, 1.0)
+    result: npt.NDArray[np.float64] = starts + parameter[:, None] * direction
+    return result
 
 
-def check_arm_crossing_xy(
+def check_arm_envelope_xy_batch(
     base_a_xy: np.ndarray,
     tcp_a_xy: np.ndarray,
+    radius_a_mm: float,
     base_b_xy: np.ndarray,
     tcp_b_xy: np.ndarray,
+    radius_b_mm: float,
+    clearance_mm: float,
     epsilon_mm: float,
     touching_is_collision: bool,
-) -> SegmentIntersectionResult:
-    """Check proper, touching, and collinear intersection of two XY segments."""
-    ax, ay = _point2(base_a_xy)
-    bx, by = _point2(tcp_a_xy)
-    cx, cy = _point2(base_b_xy)
-    dx, dy = _point2(tcp_b_xy)
-    o1 = _orient(ax, ay, bx, by, cx, cy)
-    o2 = _orient(ax, ay, bx, by, dx, dy)
-    o3 = _orient(cx, cy, dx, dy, ax, ay)
-    o4 = _orient(cx, cy, dx, dy, bx, by)
-    tolerance_ab = _orientation_tolerance(ax, ay, bx, by, epsilon_mm)
-    tolerance_cd = _orientation_tolerance(cx, cy, dx, dy, epsilon_mm)
-    proper = (
-        (o1 > tolerance_ab and o2 < -tolerance_ab) or (o1 < -tolerance_ab and o2 > tolerance_ab)
-    ) and ((o3 > tolerance_cd and o4 < -tolerance_cd) or (o3 < -tolerance_cd and o4 > tolerance_cd))
-    if proper:
-        x_mm, y_mm = _proper_intersection_point(ax, ay, bx, by, cx, cy, dx, dy)
-        return SegmentIntersectionResult(True, x_mm, y_mm)
+) -> ArmEnvelopeBatchResult:
+    """Measure and test two Base-to-TCP XY Capsules for every sample.
 
-    collinear = (
-        abs(o1) <= tolerance_ab
-        and abs(o2) <= tolerance_ab
-        and abs(o3) <= tolerance_cd
-        and abs(o4) <= tolerance_cd
-    )
-    if collinear:
-        overlaps, positive_length, overlap_point = _collinear_overlap_midpoint(
-            ax, ay, bx, by, cx, cy, dx, dy, epsilon_mm
+    For separated segments, the four endpoint-to-segment candidates are
+    sufficient and give a stable tie order: A-base, A-TCP, B-base, B-TCP.
+    Proper intersections use the analytical intersection point. Collinear
+    overlaps retain the first zero-distance candidate.
+    """
+    base_a = np.asarray(base_a_xy, dtype=np.float64).reshape(2)
+    base_b = np.asarray(base_b_xy, dtype=np.float64).reshape(2)
+    tcp_a = np.asarray(tcp_a_xy, dtype=np.float64).reshape((-1, 2))
+    tcp_b = np.asarray(tcp_b_xy, dtype=np.float64).reshape((-1, 2))
+    if len(tcp_a) != len(tcp_b):
+        raise ValueError("tcp_a_xy and tcp_b_xy must contain the same number of rows")
+    count = len(tcp_a)
+    required = float(radius_a_mm + radius_b_mm + clearance_mm)
+    if count == 0:
+        empty = np.empty(0, dtype=np.float64)
+        empty_points = np.empty((0, 2), dtype=np.float64)
+        return ArmEnvelopeBatchResult(
+            np.empty(0, dtype=np.bool_),
+            empty,
+            required,
+            empty.copy(),
+            empty.copy(),
+            empty_points,
+            empty_points.copy(),
         )
-        collision = overlaps and (positive_length or touching_is_collision)
-        if collision and overlap_point is not None:
-            return SegmentIntersectionResult(True, overlap_point[0], overlap_point[1])
-        return SegmentIntersectionResult(False)
 
-    if touching_is_collision:
-        if _on_segment(ax, ay, bx, by, cx, cy, epsilon_mm):
-            return SegmentIntersectionResult(True, cx, cy)
-        if _on_segment(ax, ay, bx, by, dx, dy, epsilon_mm):
-            return SegmentIntersectionResult(True, dx, dy)
-        if _on_segment(cx, cy, dx, dy, ax, ay, epsilon_mm):
-            return SegmentIntersectionResult(True, ax, ay)
-        if _on_segment(cx, cy, dx, dy, bx, by, epsilon_mm):
-            return SegmentIntersectionResult(True, bx, by)
-    return SegmentIntersectionResult(False)
+    repeated_a = np.broadcast_to(base_a, (count, 2))
+    repeated_b = np.broadcast_to(base_b, (count, 2))
+    projection_a_base_on_b = _project_points_to_segments(repeated_a, repeated_b, tcp_b)
+    projection_a_tcp_on_b = _project_points_to_segments(tcp_a, repeated_b, tcp_b)
+    projection_b_base_on_a = _project_points_to_segments(repeated_b, repeated_a, tcp_a)
+    projection_b_tcp_on_a = _project_points_to_segments(tcp_b, repeated_a, tcp_a)
+
+    candidates_a = np.stack(
+        (repeated_a, tcp_a, projection_b_base_on_a, projection_b_tcp_on_a), axis=1
+    )
+    candidates_b = np.stack(
+        (projection_a_base_on_b, projection_a_tcp_on_b, repeated_b, tcp_b), axis=1
+    )
+    candidate_distance_sq = np.sum((candidates_a - candidates_b) ** 2, axis=2)
+    selected = np.argmin(candidate_distance_sq, axis=1)
+    rows = np.arange(count)
+    closest_a = candidates_a[rows, selected].copy()
+    closest_b = candidates_b[rows, selected].copy()
+    distance = np.sqrt(candidate_distance_sq[rows, selected])
+
+    direction_a = tcp_a - repeated_a
+    direction_b = tcp_b - repeated_b
+    offset = repeated_b - repeated_a
+    denominator = _cross2d(direction_a, direction_b)
+    numerical_tolerance = (
+        np.finfo(np.float64).eps
+        * np.maximum(
+            np.linalg.norm(direction_a, axis=1) * np.linalg.norm(direction_b, axis=1), 1.0
+        )
+        * 16.0
+    )
+    non_parallel = np.abs(denominator) > numerical_tolerance
+    parameter_a = np.divide(
+        _cross2d(offset, direction_b),
+        denominator,
+        out=np.zeros(count, dtype=np.float64),
+        where=non_parallel,
+    )
+    parameter_b = np.divide(
+        _cross2d(offset, direction_a),
+        denominator,
+        out=np.zeros(count, dtype=np.float64),
+        where=non_parallel,
+    )
+    intersects = (
+        non_parallel
+        & (parameter_a >= 0.0)
+        & (parameter_a <= 1.0)
+        & (parameter_b >= 0.0)
+        & (parameter_b <= 1.0)
+    )
+    if np.any(intersects):
+        point = (
+            repeated_a[intersects] + parameter_a[intersects, None] * direction_a[intersects]
+        )
+        closest_a[intersects] = point
+        closest_b[intersects] = point
+        distance[intersects] = 0.0
+
+    surface_clearance = distance - float(radius_a_mm + radius_b_mm)
+    safety_margin = distance - required
+    collision = (
+        safety_margin <= epsilon_mm
+        if touching_is_collision
+        else safety_margin < -epsilon_mm
+    )
+    return ArmEnvelopeBatchResult(
+        collision=collision,
+        centerline_distance_mm=distance,
+        required_distance_mm=required,
+        safety_margin_mm=safety_margin,
+        capsule_surface_clearance_mm=surface_clearance,
+        closest_a_xy_mm=closest_a,
+        closest_b_xy_mm=closest_b,
+    )
+
+
+def check_arm_envelope_xy(
+    base_a_xy: np.ndarray,
+    tcp_a_xy: np.ndarray,
+    radius_a_mm: float,
+    base_b_xy: np.ndarray,
+    tcp_b_xy: np.ndarray,
+    radius_b_mm: float,
+    clearance_mm: float,
+    epsilon_mm: float,
+    touching_is_collision: bool,
+) -> ArmEnvelopeResult:
+    """Scalar form of :func:`check_arm_envelope_xy_batch`."""
+    batch = check_arm_envelope_xy_batch(
+        base_a_xy,
+        np.asarray(tcp_a_xy, dtype=np.float64).reshape((1, 2)),
+        radius_a_mm,
+        base_b_xy,
+        np.asarray(tcp_b_xy, dtype=np.float64).reshape((1, 2)),
+        radius_b_mm,
+        clearance_mm,
+        epsilon_mm,
+        touching_is_collision,
+    )
+    return ArmEnvelopeResult(
+        collision=bool(batch.collision[0]),
+        centerline_distance_mm=float(batch.centerline_distance_mm[0]),
+        required_distance_mm=batch.required_distance_mm,
+        safety_margin_mm=float(batch.safety_margin_mm[0]),
+        capsule_surface_clearance_mm=float(batch.capsule_surface_clearance_mm[0]),
+        closest_a_x_mm=float(batch.closest_a_xy_mm[0, 0]),
+        closest_a_y_mm=float(batch.closest_a_xy_mm[0, 1]),
+        closest_b_x_mm=float(batch.closest_b_xy_mm[0, 0]),
+        closest_b_y_mm=float(batch.closest_b_xy_mm[0, 1]),
+    )
 
 
 def check_tcp_radius_xy(
@@ -186,143 +221,3 @@ def check_tcp_radius_xy(
     required = radius_a_mm + radius_b_mm
     collision = distance <= required if touching_is_collision else distance < required
     return TcpRadiusResult(collision, distance, required)
-
-
-def check_arm_crossing_xy_batch(
-    base_a_xy: np.ndarray,
-    tcp_a_xy: np.ndarray,
-    base_b_xy: np.ndarray,
-    tcp_b_xy: np.ndarray,
-    epsilon_mm: float,
-    touching_is_collision: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Vectorized arm crossing check for a batch of TCP positions.
-
-    The returned coordinate arrays contain NaN for non-colliding samples.  Keeping
-    this hot path inside NumPy avoids creating millions of temporary Python result
-    objects during long validations.
-    """
-    base_a = np.asarray(base_a_xy, dtype=np.float64)
-    base_b = np.asarray(base_b_xy, dtype=np.float64)
-    tcp_a = np.asarray(tcp_a_xy, dtype=np.float64)
-    tcp_b = np.asarray(tcp_b_xy, dtype=np.float64)
-    count = len(tcp_a)
-    collision = np.zeros(count, dtype=np.bool_)
-    crossing_x = np.full(count, np.nan, dtype=np.float64)
-    crossing_y = np.full(count, np.nan, dtype=np.float64)
-    if count == 0:
-        return collision, crossing_x, crossing_y
-
-    ax, ay = float(base_a[0]), float(base_a[1])
-    cx, cy = float(base_b[0]), float(base_b[1])
-    bx, by = tcp_a[:, 0], tcp_a[:, 1]
-    dx, dy = tcp_b[:, 0], tcp_b[:, 1]
-
-    direction_ab_x = bx - ax
-    direction_ab_y = by - ay
-    direction_cd_x = dx - cx
-    direction_cd_y = dy - cy
-    length_ab = np.hypot(direction_ab_x, direction_ab_y)
-    length_cd = np.hypot(direction_cd_x, direction_cd_y)
-    tolerance_ab = epsilon_mm * np.maximum(length_ab, epsilon_mm)
-    tolerance_cd = epsilon_mm * np.maximum(length_cd, epsilon_mm)
-
-    o1 = direction_ab_x * (cy - ay) - direction_ab_y * (cx - ax)
-    o2 = direction_ab_x * (dy - ay) - direction_ab_y * (dx - ax)
-    o3 = direction_cd_x * (ay - cy) - direction_cd_y * (ax - cx)
-    o4 = direction_cd_x * (by - cy) - direction_cd_y * (bx - cx)
-    proper = (
-        ((o1 > tolerance_ab) & (o2 < -tolerance_ab)) | ((o1 < -tolerance_ab) & (o2 > tolerance_ab))
-    ) & (
-        ((o3 > tolerance_cd) & (o4 < -tolerance_cd)) | ((o3 < -tolerance_cd) & (o4 > tolerance_cd))
-    )
-    collision[proper] = True
-    denominator = direction_ab_x * direction_cd_y - direction_ab_y * direction_cd_x
-    proper_indices = np.flatnonzero(proper)
-    if len(proper_indices):
-        t_value = (
-            (cx - ax) * direction_cd_y[proper_indices] - (cy - ay) * direction_cd_x[proper_indices]
-        ) / denominator[proper_indices]
-        crossing_x[proper_indices] = ax + t_value * direction_ab_x[proper_indices]
-        crossing_y[proper_indices] = ay + t_value * direction_ab_y[proper_indices]
-
-    collinear = (
-        (np.abs(o1) <= tolerance_ab)
-        & (np.abs(o2) <= tolerance_ab)
-        & (np.abs(o3) <= tolerance_cd)
-        & (np.abs(o4) <= tolerance_cd)
-    )
-    for index in np.flatnonzero(collinear):
-        result = check_arm_crossing_xy(
-            base_a,
-            tcp_a[index],
-            base_b,
-            tcp_b[index],
-            epsilon_mm,
-            touching_is_collision,
-        )
-        if result.intersects:
-            collision[index] = True
-            crossing_x[index] = result.x_mm
-            crossing_y[index] = result.y_mm
-
-    if touching_is_collision:
-        remaining = ~(proper | collinear)
-        bounds_ab_x = (np.minimum(ax, bx) - epsilon_mm <= cx) & (
-            cx <= np.maximum(ax, bx) + epsilon_mm
-        )
-        bounds_ab_y = (np.minimum(ay, by) - epsilon_mm <= cy) & (
-            cy <= np.maximum(ay, by) + epsilon_mm
-        )
-        c_on_ab = (
-            (
-                np.where(length_ab <= epsilon_mm, np.hypot(cx - ax, cy - ay), np.abs(o1))
-                <= np.where(length_ab <= epsilon_mm, epsilon_mm, epsilon_mm * length_ab)
-            )
-            & bounds_ab_x
-            & bounds_ab_y
-        )
-        bounds_d_ab = (
-            (np.minimum(ax, bx) - epsilon_mm <= dx)
-            & (dx <= np.maximum(ax, bx) + epsilon_mm)
-            & (np.minimum(ay, by) - epsilon_mm <= dy)
-            & (dy <= np.maximum(ay, by) + epsilon_mm)
-        )
-        d_on_ab = (np.abs(o2) <= epsilon_mm * np.maximum(length_ab, epsilon_mm)) & bounds_d_ab
-        bounds_a_cd = (
-            (np.minimum(cx, dx) - epsilon_mm <= ax)
-            & (ax <= np.maximum(cx, dx) + epsilon_mm)
-            & (np.minimum(cy, dy) - epsilon_mm <= ay)
-            & (ay <= np.maximum(cy, dy) + epsilon_mm)
-        )
-        a_on_cd = (np.abs(o3) <= epsilon_mm * np.maximum(length_cd, epsilon_mm)) & bounds_a_cd
-        bounds_b_cd = (
-            (np.minimum(cx, dx) - epsilon_mm <= bx)
-            & (bx <= np.maximum(cx, dx) + epsilon_mm)
-            & (np.minimum(cy, dy) - epsilon_mm <= by)
-            & (by <= np.maximum(cy, dy) + epsilon_mm)
-        )
-        b_on_cd = (np.abs(o4) <= epsilon_mm * np.maximum(length_cd, epsilon_mm)) & bounds_b_cd
-
-        def apply_touch(
-            touches: np.ndarray,
-            point_x: float | np.ndarray,
-            point_y: float | np.ndarray,
-        ) -> None:
-            selected = remaining & touches & ~collision
-            collision[selected] = True
-            if isinstance(point_x, np.ndarray) and isinstance(point_y, np.ndarray):
-                crossing_x[selected] = point_x[selected]
-                crossing_y[selected] = point_y[selected]
-            else:
-                crossing_x[selected] = point_x
-                crossing_y[selected] = point_y
-
-        for touches, point_x, point_y in (
-            (c_on_ab, cx, cy),
-            (d_on_ab, dx, dy),
-            (a_on_cd, ax, ay),
-            (b_on_cd, bx, by),
-        ):
-            apply_touch(touches, point_x, point_y)
-    return collision, crossing_x, crossing_y

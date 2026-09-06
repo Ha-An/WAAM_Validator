@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from waam_validator.dashboard.data import JobRecord, RunRecord
@@ -59,4 +60,37 @@ def test_validation_input_manifest_detects_later_change(tmp_path: Path) -> None:
     (job.path / "trajectory.csv").write_text("changed", encoding="utf-8")
     unchanged, message = verify_validation_inputs(job.path, run.directory)
     assert unchanged is False
+    assert "다시 실행" in message
+
+
+def test_schema_20_result_without_manifest_uses_safe_legacy_match(tmp_path: Path) -> None:
+    job, run = _records(tmp_path)
+    payload = {
+        "schema_version": "2.0",
+        "status": "PASS",
+        "input": {"directory": str(job.path.resolve())},
+    }
+    (run.directory / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    matches, message = verify_validation_inputs(job.path, run.directory)
+
+    assert matches is True
+    assert "수정 시각" in message
+
+
+def test_legacy_match_rejects_input_newer_than_result(tmp_path: Path) -> None:
+    job, run = _records(tmp_path)
+    payload = {
+        "schema_version": "2.0",
+        "status": "PASS",
+        "input": {"directory": str(job.path.resolve())},
+    }
+    summary_path = run.directory / "summary.json"
+    summary_path.write_text(json.dumps(payload), encoding="utf-8")
+    newer_ns = summary_path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(job.path / "trajectory.csv", ns=(newer_ns, newer_ns))
+
+    matches, message = verify_validation_inputs(job.path, run.directory)
+
+    assert matches is False
     assert "다시 실행" in message

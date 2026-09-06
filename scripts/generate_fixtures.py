@@ -20,7 +20,13 @@ BASES = {
 CSV_HEADER = ("robot_id", "time_s", "x_mm", "y_mm", "z_mm", "mode")
 
 
-def config(*, visuals: bool = False) -> dict[str, object]:
+def config(
+    *,
+    visuals: bool = False,
+    arm_enabled: bool = True,
+    include_home: bool = False,
+    workspace_radius_mm: float = 500.0,
+) -> dict[str, object]:
     return {
         "simulation": {
             "max_time_step_s": 0.1,
@@ -32,7 +38,13 @@ def config(*, visuals: bool = False) -> dict[str, object]:
             {
                 "id": robot_id,
                 "base_xyz_mm": list(base),
+                **(
+                    {"home_xyz_mm": [base[0], base[1], 100.0]}
+                    if include_home
+                    else {}
+                ),
                 "tcp_radius_mm": 20.0,
+                "arm_envelope_radius_mm": 100.0,
                 "reach_radius_mm": 2500.0,
             }
             for robot_id, base in BASES.items()
@@ -48,10 +60,11 @@ def config(*, visuals: bool = False) -> dict[str, object]:
         "workspace": {
             "shape": "circle_xy",
             "center_xy_mm": [0.0, 0.0],
-            "radius_mm": 500.0,
+            "radius_mm": workspace_radius_mm,
         },
         "collision": {
-            "check_arm_crossing": True,
+            "check_arm_envelope": arm_enabled,
+            "arm_clearance_mm": 50.0,
             "check_tcp_radius": True,
             "touching_is_collision": True,
             "geometry_epsilon_mm": 0.000001,
@@ -161,6 +174,19 @@ def time_separated_rows() -> list[tuple[object, ...]]:
     return rows
 
 
+def arm_envelope_near_miss_rows() -> list[tuple[object, ...]]:
+    """Non-crossing centerlines whose endpoint Capsules violate 250 mm."""
+    return [
+        (1, 0.0, -1000.0, -600.0, 100.0, "T"),
+        (1, 10.0, 0.0, -100.0, 100.0, "W"),
+        (1, 20.0, 0.0, -100.0, 100.0, "W"),
+        (2, 0.0, 1000.0, -600.0, 100.0, "T"),
+        (2, 10.0, 0.0, 100.0, 100.0, "W"),
+        (2, 20.0, 0.0, 100.0, 100.0, "W"),
+        *parked(3, 20.0),
+    ]
+
+
 def write_target(path: Path) -> None:
     polygon = LineString([(-40.0, 0.0), (40.0, 0.0)]).buffer(
         2.0, quad_segs=8, cap_style="round", join_style="round"
@@ -170,11 +196,19 @@ def write_target(path: Path) -> None:
     mesh.export(path, file_type="stl")
 
 
-def write_job(name: str, rows: list[tuple[object, ...]], *, visuals: bool = False) -> None:
+def write_job(
+    name: str,
+    rows: list[tuple[object, ...]],
+    *,
+    visuals: bool = False,
+    arm_enabled: bool = True,
+) -> None:
     directory = FIXTURES / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "config.yaml").write_text(
-        yaml.safe_dump(config(visuals=visuals), sort_keys=False), encoding="utf-8"
+        yaml.safe_dump(config(visuals=visuals, arm_enabled=arm_enabled), sort_keys=False),
+        encoding="utf-8",
+        newline="\n",
     )
     with (directory / "trajectory.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -186,8 +220,9 @@ def write_job(name: str, rows: list[tuple[object, ...]], *, visuals: bool = Fals
 def main() -> None:
     write_job("collision_free", standard_rows())
     write_job("arm_cross", arm_cross_rows())
-    write_job("tcp_radius", tcp_radius_rows())
+    write_job("tcp_radius", tcp_radius_rows(), arm_enabled=False)
     write_job("time_separated_crossing", time_separated_rows())
+    write_job("arm_envelope_near_miss", arm_envelope_near_miss_rows())
     write_job("shape_underfill", standard_rows(-40.0, 20.0))
     write_job("shape_overfill", standard_rows(-50.0, 50.0))
     example = ROOT / "examples" / "sample_job"
@@ -196,7 +231,12 @@ def main() -> None:
     for filename in ("trajectory.csv", "target.stl"):
         shutil.copyfile(source / filename, example / filename)
     (example / "config.yaml").write_text(
-        yaml.safe_dump(config(visuals=True), sort_keys=False), encoding="utf-8"
+        yaml.safe_dump(
+            config(visuals=True, include_home=True, workspace_radius_mm=250.0),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+        newline="\n",
     )
 
 

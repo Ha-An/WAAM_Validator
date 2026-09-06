@@ -12,7 +12,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.axes import Axes  # noqa: E402
 from matplotlib.collections import LineCollection  # noqa: E402
+from matplotlib.patches import Circle  # noqa: E402
 from shapely import difference, intersection, union_all  # noqa: E402
+from shapely.geometry import LineString  # noqa: E402
 from shapely.geometry.base import BaseGeometry  # noqa: E402
 
 from ..config.models import Config  # noqa: E402
@@ -66,9 +68,10 @@ def generate_static_plots(
     layer_metrics: list[LayerMetrics],
     output_dir: Path,
 ) -> None:
-    """Generate all four mandatory PNG analysis views."""
+    """Generate all mandatory PNG analysis views."""
     try:
         _overview(trajectories, config, target_layers, collision, output_dir)
+        _arm_envelope_worst_case(config, collision, output_dir)
         _gantt(trajectories, collision, schedule, output_dir)
         _shape_metrics(layer_metrics, output_dir)
         _worst_layer(deposited_layers, target_layers, layer_metrics, output_dir)
@@ -122,10 +125,10 @@ def _overview(
         final = trajectory.xyz_mm[-1]
         axes.scatter(final[0], final[1], marker="x", s=55, color=color)
     for event in collision.events:
-        x_value = event.crossing_x_mm if event.collision_type == "ARM_CROSS" else event.marker_x_mm
-        y_value = event.crossing_y_mm if event.collision_type == "ARM_CROSS" else event.marker_y_mm
-        if x_value is not None and y_value is not None:
-            axes.scatter(x_value, y_value, marker="*", s=100, color="crimson")
+        x_value = (event.closest_a_x_mm + event.closest_b_x_mm) / 2.0
+        y_value = (event.closest_a_y_mm + event.closest_b_y_mm) / 2.0
+        color = "crimson" if event.collision_type == "ARM_ENVELOPE" else "darkorange"
+        axes.scatter(x_value, y_value, marker="*", s=100, color=color)
     axes.set_title("WAAM trajectory and collision overview (XY)")
     axes.set_xlabel("X [mm]")
     axes.set_ylabel("Y [mm]")
@@ -133,6 +136,97 @@ def _overview(
     axes.grid(True, alpha=0.25)
     axes.legend(loc="best")
     figure.savefig(output_dir / "overview_xy.png", dpi=160)
+    plt.close(figure)
+
+
+def _arm_envelope_worst_case(
+    config: Config,
+    collision: CollisionSimulationResult,
+    output_dir: Path,
+) -> None:
+    figure, axes = plt.subplots(figsize=(9, 8), constrained_layout=True)
+    bases = np.asarray([robot.base_xyz_mm[:2] for robot in config.robots], dtype=np.float64)
+    triangle = np.vstack((bases, bases[0]))
+    axes.plot(triangle[:, 0], triangle[:, 1], color="#64748b", linestyle=":", label="Base triangle")
+    workspace = Circle(
+        config.workspace.center_xy_mm,
+        config.workspace.radius_mm,
+        facecolor="#38bdf8",
+        edgecolor="#0ea5e9",
+        alpha=0.08,
+        label="Workspace",
+    )
+    axes.add_patch(workspace)
+    worst_pair = collision.minimum_arm_pair
+    for robot, tcp in zip(config.robots, collision.minimum_arm_tcp_positions_xy, strict=True):
+        color = _ROBOT_COLORS[robot.id]
+        segment = LineString([robot.base_xyz_mm[:2], tcp])
+        physical = segment.buffer(robot.arm_envelope_radius_mm, cap_style="round")
+        decision = segment.buffer(
+            robot.arm_envelope_radius_mm + config.collision.arm_clearance_mm / 2.0,
+            cap_style="round",
+        )
+        _draw_geometry(
+            axes,
+            physical,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.22,
+            label=f"R{robot.id} physical Capsule",
+        )
+        for component_index, polygon in enumerate(polygon_components(decision)):
+            x_values, y_values = polygon.exterior.xy
+            axes.plot(
+                x_values,
+                y_values,
+                color=color,
+                linestyle="--",
+                linewidth=1.0,
+                label=(f"R{robot.id} decision outline" if component_index == 0 else None),
+            )
+        axes.plot(
+            [robot.base_xyz_mm[0], tcp[0]],
+            [robot.base_xyz_mm[1], tcp[1]],
+            color=color,
+            linewidth=1.5,
+        )
+        axes.scatter(*robot.base_xyz_mm[:2], marker="^", s=80, color=color)
+        axes.scatter(*tcp, marker="o", s=45, color=color)
+
+    closest_a = collision.minimum_arm_closest_a_xy
+    closest_b = collision.minimum_arm_closest_b_xy
+    if not config.collision.check_arm_envelope:
+        status = "DISABLED"
+        status_color = "dimgray"
+    elif config.collision.touching_is_collision:
+        failed = collision.minimum_arm_safety_margin_mm <= config.collision.geometry_epsilon_mm
+        status = "FAIL" if failed else "PASS"
+        status_color = "crimson" if failed else "forestgreen"
+    else:
+        failed = collision.minimum_arm_safety_margin_mm < -config.collision.geometry_epsilon_mm
+        status = "FAIL" if failed else "PASS"
+        status_color = "crimson" if failed else "forestgreen"
+    axes.plot(
+        [closest_a[0], closest_b[0]],
+        [closest_a[1], closest_b[1]],
+        color=status_color,
+        linewidth=3.0,
+        marker="o",
+        label="Closest centerline points",
+    )
+    axes.set_title(
+        f"Arm Envelope worst case — {status}\n"
+        f"R{worst_pair[0]}-R{worst_pair[1]} at {collision.minimum_arm_time_s:.3f} s | "
+        f"distance {collision.arm_centerline_distance_at_worst_mm:.3f} mm | "
+        f"required {collision.arm_required_distance_at_worst_mm:.3f} mm | "
+        f"margin {collision.minimum_arm_safety_margin_mm:.3f} mm"
+    )
+    axes.set_xlabel("X [mm]")
+    axes.set_ylabel("Y [mm]")
+    axes.axis("equal")
+    axes.grid(True, alpha=0.25)
+    axes.legend(loc="best", fontsize=8)
+    figure.savefig(output_dir / "arm_envelope_worst_case.png", dpi=160)
     plt.close(figure)
 
 
@@ -166,7 +260,8 @@ def _gantt(
                     facecolors=_MODE_COLORS[label],
                 )
     for event in collision.events:
-        axes.axvspan(event.start_s, event.end_s, color="crimson", alpha=0.15)
+        color = "crimson" if event.collision_type == "ARM_ENVELOPE" else "darkorange"
+        axes.axvspan(event.start_s, event.end_s, color=color, alpha=0.15)
     axes.set_yticks(range(3), ["Robot 1", "Robot 2", "Robot 3"])
     axes.set_xlim(0, schedule.makespan_s)
     axes.set_xlabel("Time [s]")

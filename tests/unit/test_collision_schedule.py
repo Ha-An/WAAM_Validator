@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from waam_validator.collision.geometry2d import (
-    check_arm_crossing_xy,
-    check_arm_crossing_xy_batch,
+    check_arm_envelope_xy,
+    check_arm_envelope_xy_batch,
     check_tcp_radius_xy,
 )
 from waam_validator.collision.simulator import (
@@ -15,114 +15,99 @@ from waam_validator.collision.simulator import (
     run_collision_analysis,
 )
 from waam_validator.config.loader import load_config
-from waam_validator.models import SegmentIntersectionResult, TcpRadiusResult
+from waam_validator.models import (
+    ArmEnvelopeResult,
+    RobotTrajectory,
+    TcpRadiusResult,
+    TrajectorySet,
+)
 from waam_validator.schedule.metrics import compute_schedule_metrics
 from waam_validator.trajectory.loader import load_trajectory_csv
 
 
 @pytest.mark.parametrize(
-    ("a", "b", "c", "d", "expected"),
+    ("a", "b", "c", "d", "expected_distance"),
     [
-        ((0, 0), (10, 10), (0, 10), (10, 0), True),
-        ((0, 0), (10, 0), (0, 5), (10, 5), False),
-        ((0, 0), (10, 0), (5, 0), (15, 0), True),
-        ((0, 0), (10, 0), (10, 0), (10, 10), True),
-        ((0, 0), (0, 0), (0, 0), (10, 0), True),
+        ((0, 0), (10, 10), (0, 10), (10, 0), 0.0),
+        ((0, 0), (10, 0), (0, 5), (10, 5), 5.0),
+        ((0, 0), (10, 0), (5, 0), (15, 0), 0.0),
+        ((0, 0), (10, 0), (10, 0), (10, 10), 0.0),
+        ((0, 0), (0, 0), (3, 4), (3, 4), 5.0),
     ],
 )
-def test_segment_intersection_cases(
-    a: object, b: object, c: object, d: object, expected: bool
+def test_capsule_centerline_distance_cases(
+    a: object, b: object, c: object, d: object, expected_distance: float
 ) -> None:
-    result = check_arm_crossing_xy(
-        np.asarray(a), np.asarray(b), np.asarray(c), np.asarray(d), 1e-6, True
+    result = check_arm_envelope_xy(
+        np.asarray(a), np.asarray(b), 1.0, np.asarray(c), np.asarray(d), 1.0, 0.0, 1e-6, True
     )
-    assert result.intersects is expected
+    assert result.centerline_distance_mm == pytest.approx(expected_distance)
 
 
-def test_endpoint_touch_can_be_disabled() -> None:
-    result = check_arm_crossing_xy(
-        np.array([0, 0]),
-        np.array([10, 0]),
-        np.array([10, 0]),
-        np.array([10, 10]),
-        1e-6,
-        False,
-    )
-    assert not result.intersects
-
-
-def test_linear_geometry_epsilon_scales_for_long_segments() -> None:
-    within = check_arm_crossing_xy(
+def test_capsule_exact_touching_respects_policy_and_epsilon() -> None:
+    arguments = (
         np.array([0.0, 0.0]),
-        np.array([1_000_000.0, 0.0]),
-        np.array([500_000.0, 0.0005]),
-        np.array([1_500_000.0, 0.0005]),
-        0.001,
-        True,
-    )
-    outside = check_arm_crossing_xy(
-        np.array([0.0, 0.0]),
-        np.array([1_000_000.0, 0.0]),
-        np.array([500_000.0, 0.002]),
-        np.array([1_500_000.0, 0.002]),
-        0.001,
-        True,
-    )
-
-    assert within.intersects
-    assert not outside.intersects
-
-
-def test_diagonal_collinear_gap_uses_euclidean_epsilon() -> None:
-    direction = np.array([1.0, 1.0]) / np.sqrt(2.0)
-    touching = check_arm_crossing_xy(
-        np.array([0.0, 0.0]),
-        direction * 10.0,
-        direction * 10.0005,
-        direction * 20.0,
-        0.001,
-        True,
-    )
-    separated = check_arm_crossing_xy(
-        np.array([0.0, 0.0]),
-        direction * 10.0,
-        direction * 10.002,
-        direction * 20.0,
-        0.001,
-        True,
-    )
-
-    assert touching.intersects
-    assert not separated.intersects
-
-
-def test_proper_intersection_location() -> None:
-    result = check_arm_crossing_xy(
-        np.array([0.0, 0.0]),
-        np.array([10.0, 10.0]),
-        np.array([0.0, 10.0]),
         np.array([10.0, 0.0]),
+        2.0,
+        np.array([0.0, 5.0]),
+        np.array([10.0, 5.0]),
+        2.0,
+        1.0,
+        1e-6,
+    )
+    assert check_arm_envelope_xy(*arguments, True).collision
+    assert not check_arm_envelope_xy(*arguments, False).collision
+
+
+def test_capsule_unequal_radii_and_clearance_only_violation() -> None:
+    result = check_arm_envelope_xy(
+        np.array([0.0, 0.0]),
+        np.array([10.0, 0.0]),
+        2.0,
+        np.array([0.0, 7.0]),
+        np.array([10.0, 7.0]),
+        3.0,
+        3.0,
         1e-6,
         True,
     )
-    assert (result.x_mm, result.y_mm) == pytest.approx((5.0, 5.0))
+    assert result.centerline_distance_mm == pytest.approx(7.0)
+    assert result.capsule_surface_clearance_mm == pytest.approx(2.0)
+    assert result.safety_margin_mm == pytest.approx(-1.0)
+    assert result.collision
 
 
-def test_batch_arm_crossing_matches_scalar_results() -> None:
+def test_capsule_batch_matches_scalar_and_closest_points() -> None:
     base_a = np.array([0.0, 0.0])
     base_b = np.array([10.0, 0.0])
-    tcp_a = np.array([[10.0, 10.0], [5.0, 0.0], [0.0, 0.0], [2.0, 2.0], [4.0, 5.0]])
-    tcp_b = np.array([[0.0, 10.0], [15.0, 0.0], [10.0, 0.0], [8.0, 2.0], [7.0, 8.0]])
-
-    collisions, crossing_x, crossing_y = check_arm_crossing_xy_batch(
-        base_a, tcp_a, base_b, tcp_b, 1e-6, True
+    tcp_a = np.array([[10.0, 10.0], [5.0, 2.0], [0.0, 0.0], [2.0, 2.0]])
+    tcp_b = np.array([[0.0, 10.0], [15.0, 2.0], [13.0, 4.0], [8.0, 2.0]])
+    batch = check_arm_envelope_xy_batch(
+        base_a, tcp_a, 2.0, base_b, tcp_b, 3.0, 1.0, 1e-6, True
     )
     for index in range(len(tcp_a)):
-        scalar = check_arm_crossing_xy(base_a, tcp_a[index], base_b, tcp_b[index], 1e-6, True)
-        assert bool(collisions[index]) is scalar.intersects
-        if scalar.intersects:
-            assert crossing_x[index] == pytest.approx(scalar.x_mm)
-            assert crossing_y[index] == pytest.approx(scalar.y_mm)
+        scalar = check_arm_envelope_xy(
+            base_a,
+            tcp_a[index],
+            2.0,
+            base_b,
+            tcp_b[index],
+            3.0,
+            1.0,
+            1e-6,
+            True,
+        )
+        assert bool(batch.collision[index]) is scalar.collision
+        assert batch.centerline_distance_mm[index] == pytest.approx(
+            scalar.centerline_distance_mm
+        )
+        assert batch.safety_margin_mm[index] == pytest.approx(scalar.safety_margin_mm)
+        assert batch.closest_a_xy_mm[index] == pytest.approx(
+            (scalar.closest_a_x_mm, scalar.closest_a_y_mm)
+        )
+        assert batch.closest_b_xy_mm[index] == pytest.approx(
+            (scalar.closest_b_x_mm, scalar.closest_b_y_mm)
+        )
 
 
 @pytest.mark.parametrize(
@@ -153,7 +138,17 @@ def test_known_collision_fixtures(fixture_root: Path) -> None:
     arm = run_collision_analysis(
         load_trajectory_csv(arm_job / "trajectory.csv", arm_config), arm_config
     )
-    assert arm.arm_cross_event_count >= 1
+    assert arm.arm_envelope_event_count >= 1
+
+    near_job = fixture_root / "arm_envelope_near_miss"
+    near_config = load_config(near_job / "config.yaml")
+    near = run_collision_analysis(
+        load_trajectory_csv(near_job / "trajectory.csv", near_config), near_config
+    )
+    assert near.arm_envelope_event_count >= 1
+    assert near.minimum_arm_pair == (1, 2)
+    assert 0.0 < near.arm_centerline_distance_at_worst_mm < 250.0
+    assert near.minimum_arm_safety_margin_mm < 0.0
 
     tcp_job = fixture_root / "tcp_radius"
     tcp_config = load_config(tcp_job / "config.yaml")
@@ -161,7 +156,8 @@ def test_known_collision_fixtures(fixture_root: Path) -> None:
         load_trajectory_csv(tcp_job / "trajectory.csv", tcp_config), tcp_config
     )
     assert tcp.tcp_radius_event_count == 1
-    assert tcp.arm_cross_event_count == 0
+    assert tcp.arm_envelope_event_count == 0
+    assert tcp.minimum_arm_safety_margin_mm < 0.0
 
 
 def test_time_separated_crossing_is_collision_free(fixture_root: Path) -> None:
@@ -171,27 +167,80 @@ def test_time_separated_crossing_is_collision_free(fixture_root: Path) -> None:
     assert not result.events
 
 
+def test_completed_robot_remains_a_stationary_collision_body(fixture_root: Path) -> None:
+    config = load_config(fixture_root / "collision_free" / "config.yaml")
+
+    def trajectory(
+        robot_id: int,
+        times: list[float],
+        xyz: list[list[float]],
+        modes: list[int],
+    ) -> RobotTrajectory:
+        return RobotTrajectory(
+            robot_id,
+            np.asarray(times, dtype=np.float64),
+            np.asarray(xyz, dtype=np.float32),
+            np.asarray(modes, dtype=np.uint8),
+        )
+
+    trajectories = TrajectorySet(
+        (
+            trajectory(1, [0.0, 1.0], [[-1000, -600, 100], [0, -100, 100]], [0, 2]),
+            trajectory(
+                2,
+                [0.0, 1.0, 2.0],
+                [[1000, -600, 100], [1000, -600, 100], [0, 100, 100]],
+                [2, 0, 2],
+            ),
+            trajectory(3, [0.0, 2.0], [[0, 1200, 100], [0, 1200, 100]], [2, 2]),
+        ),
+        7,
+    )
+    result = run_collision_analysis(trajectories, config)
+    events = [
+        event
+        for event in result.events
+        if event.collision_type == "ARM_ENVELOPE" and (event.robot_a, event.robot_b) == (1, 2)
+    ]
+
+    assert events
+    assert events[0].start_s > 1.0
+
+
+def _arm_result(collided: bool, margin: float) -> ArmEnvelopeResult:
+    return ArmEnvelopeResult(
+        collision=collided,
+        centerline_distance_mm=250.0 + margin,
+        required_distance_mm=250.0,
+        safety_margin_mm=margin,
+        capsule_surface_clearance_mm=50.0 + margin,
+        closest_a_x_mm=1.0,
+        closest_a_y_mm=2.0,
+        closest_b_x_mm=3.0,
+        closest_b_y_mm=4.0,
+    )
+
+
 def test_event_accumulator_merges_only_short_false_gaps() -> None:
     accumulator = CollisionEventAccumulator(merge_gap_s=0.2)
     pair = (1, 2)
-    true_arm = SegmentIntersectionResult(True, 1.0, 2.0)
-    false_arm = SegmentIntersectionResult(False)
     safe_tcp = TcpRadiusResult(False, 100.0, 20.0)
     positions = (np.array([0.0, 0.0]), np.array([100.0, 0.0]))
     for time_s, arm in (
-        (0.0, true_arm),
-        (0.1, true_arm),
-        (0.2, false_arm),
-        (0.3, true_arm),
-        (0.4, false_arm),
-        (0.8, true_arm),
+        (0.0, _arm_result(True, -1.0)),
+        (0.1, _arm_result(True, -2.0)),
+        (0.2, _arm_result(False, 1.0)),
+        (0.3, _arm_result(True, -3.0)),
+        (0.4, _arm_result(False, 1.0)),
+        (0.8, _arm_result(True, -1.0)),
     ):
         accumulator.update(time_s, pair, arm, safe_tcp, positions)
     events = accumulator.finalize(1.0)
-    arm_events = [event for event in events if event.collision_type == "ARM_CROSS"]
+    arm_events = [event for event in events if event.collision_type == "ARM_ENVELOPE"]
     assert len(arm_events) == 2
     assert arm_events[0].start_s == 0.0
     assert arm_events[0].end_s == 0.3
+    assert arm_events[0].minimum_safety_margin_mm == pytest.approx(-3.0)
 
 
 def test_batch_event_accumulator_merges_gap_across_batch_boundary() -> None:
@@ -202,20 +251,27 @@ def test_batch_event_accumulator_merges_gap_across_batch_boundary() -> None:
         (np.array([0.3, 0.4, 0.8]), np.array([True, False, True])),
     ):
         count = len(times)
+        arm_margin = np.where(arm_collision, -1.0, 1.0)
         accumulator.update_batch(
             times,
             pair,
             arm_collision,
-            np.full(count, 1.0),
-            np.full(count, 2.0),
+            250.0 + arm_margin,
+            250.0,
+            arm_margin,
+            50.0 + arm_margin,
+            np.zeros((count, 2)),
+            np.ones((count, 2)),
             np.zeros(count, dtype=np.bool_),
             np.full(count, 100.0),
             20.0,
+            np.full(count, 80.0),
             np.zeros((count, 2)),
+            np.ones((count, 2)),
         )
 
     events = accumulator.finalize(1.0)
-    arm_events = [event for event in events if event.collision_type == "ARM_CROSS"]
+    arm_events = [event for event in events if event.collision_type == "ARM_ENVELOPE"]
     assert [(event.start_s, event.end_s) for event in arm_events] == [
         (0.0, 0.3),
         (0.8, 0.8),

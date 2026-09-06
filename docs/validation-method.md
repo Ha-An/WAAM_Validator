@@ -90,7 +90,7 @@ margin = configured reach radius - maximum reach
 Reach는 기구학적 자세나 관절 제한이 아니라 Base–TCP 직선거리 기반의 1차 계획
 검사입니다.
 
-`base_xyz_mm`은 로봇이 World 좌표계에 고정 설치된 기준점이며 모든 Reach와 ARM_CROSS
+`base_xyz_mm`은 로봇이 World 좌표계에 고정 설치된 기준점이며 모든 Reach와 Arm Capsule
 계산의 원점입니다. `home_xyz_mm`은 입력 시작·종료 등에 사용할 수 있는 선택적 명목
 TCP 대기점일 뿐이며, Base를 대신하거나 Reach 중심을 바꾸지 않습니다.
 
@@ -107,14 +107,26 @@ sample dt <= max_time_step_s
 전체 timeline을 메모리에 보관하지 않고 streaming batch로 처리합니다. 매 sample의
 세 robot pair `(1,2)`, `(1,3)`, `(2,3)`에 대해 다음을 계산합니다.
 
-### ARM_CROSS
+### ARM_ENVELOPE
 
-각 Robot Base와 현재 TCP를 잇는 XY 선분 두 개의 교차를 검사합니다. proper crossing,
-endpoint touch, collinear overlap과 길이가 0인 degenerate 선분을 설정한 epsilon과
-`touching_is_collision` 규칙으로 일관되게 처리합니다. Collinear overlap의 대표점은
-겹친 구간의 중점입니다.
+각 Robot Base와 현재 TCP를 잇는 유한 XY 선분을 중심선으로 하고, Robot별
+`arm_envelope_radius_mm`만큼 둥글게 확장한 2D Capsule을 정의합니다. 두 중심선의
+최단거리와 가장 가까운 양쪽 점을 proper crossing, 평행, 공선 overlap, endpoint 접근,
+Base=TCP인 degenerate 선분까지 포함해 계산합니다.
 
-이 검사는 Z 높이를 고려하지 않으며 실제 다관절 로봇의 링크 형상을 대체하지
+```text
+required centerline distance = radius_A + radius_B + arm_clearance_mm
+capsule surface clearance    = centerline distance - radius_A - radius_B
+safety margin                = centerline distance - required centerline distance
+```
+
+`touching_is_collision: true`이면 `safety margin <= geometry_epsilon_mm`, false이면
+`safety margin < -geometry_epsilon_mm`일 때 충돌입니다. 즉 물리 Capsule이 겹치지 않아도
+표면 사이 공통 안전거리가 부족하면 `ARM_ENVELOPE` event가 발생합니다. 로봇별 반경이
+다른 경우에도 pair별 요구 거리를 따로 계산합니다.
+
+검사를 꺼도 전체 sample에서 최소 safety margin과 최악 시점·pair는 기록하지만 event와
+FAIL은 만들지 않습니다. 이 검사는 Z 높이, 관절 자세와 실제 링크 형상을 고려하지
 않습니다.
 
 ### TCP_RADIUS
@@ -135,6 +147,11 @@ required distance = radius_a + radius_b
 중간 false gap이 `event_merge_gap_s` 이하면 하나로 병합하고, event 범위는 첫 true
 시각부터 마지막 true 시각까지 기록합니다. 결과 event는 시작 시각, 종류, pair
 순으로 정렬한 뒤 안정적인 ID를 부여합니다.
+
+먼저 trajectory가 끝난 로봇은 최종 TCP 위치에 정지한 Capsule로 계속 검사합니다.
+UI의 `완료 후 비활성`은 일정 상태를 뜻하며 충돌체가 작업 공간에서 제거되었다는 뜻이
+아닙니다. Adaptive timeline은 sample 기반이므로 연속시간 swept collision을 수학적으로
+보증하지 않습니다.
 
 ## 적층 형상 생성
 
@@ -203,17 +220,17 @@ failed ratio     = failed layer count / evaluated layer count
 
 - Wait 위치 위반 또는 `fail_on_speed_violation: true`인 속도 위반
 - Robot Reach 초과
-- 활성화된 ARM_CROSS 또는 TCP_RADIUS event
+- 활성화된 ARM_ENVELOPE 또는 TCP_RADIUS event
 - 전체 Coverage, Overfill, IoU 또는 failed-layer ratio 기준 위반
 
-Failure Reasons는 입력/process, Reach, ARM_CROSS, TCP_RADIUS, 형상 threshold,
+Failure Reasons는 입력/process, Reach, ARM_ENVELOPE, TCP_RADIUS, 형상 threshold,
 속도 위반의 고정 순서로 생성합니다. Warning만 있고 위 조건이 없으면 PASS가
 가능합니다.
 
 ## 해석 한계
 
-- Base–TCP XY 선분은 실제 링크와 joint configuration을 표현하지 않습니다.
-- XY에서 교차하면 실제 Z 분리 여부와 관계없이 ARM_CROSS로 볼 수 있습니다.
+- Base–TCP XY Capsule은 실제 링크와 joint configuration을 표현하지 않습니다.
+- XY Capsule 안전 여유가 부족하면 실제 Z 분리 여부와 관계없이 ARM_ENVELOPE로 봅니다.
 - TCP radius는 공구·토치·케이블의 실제 3D 형상을 대체하지 않습니다.
 - 일정한 bead 폭과 layer 높이를 가정합니다.
 - 시작·정지, 가감속, 열이력, 비드 단면 변화, 용융풀, 변형과 잔류응력을 계산하지
