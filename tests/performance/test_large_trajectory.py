@@ -62,12 +62,8 @@ def test_100k_rows_under_512_mb(fixture_root: Path, tmp_path: Path) -> None:
         time.sleep(0.02)
     stdout, stderr = process.communicate()
     elapsed_s = time.perf_counter() - started
-    batch_tcp_a = np.column_stack(
-        (np.linspace(-500.0, 500.0, 100_000), np.full(100_000, 100.0))
-    )
-    batch_tcp_b = np.column_stack(
-        (np.linspace(500.0, -500.0, 100_000), np.full(100_000, -100.0))
-    )
+    batch_tcp_a = np.column_stack((np.linspace(-500.0, 500.0, 100_000), np.full(100_000, 100.0)))
+    batch_tcp_b = np.column_stack((np.linspace(500.0, -500.0, 100_000), np.full(100_000, -100.0)))
     capsule_started = time.perf_counter()
     capsule_result = check_arm_envelope_xy_batch(
         np.array([-1000.0, -600.0]),

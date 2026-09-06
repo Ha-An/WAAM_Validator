@@ -38,19 +38,35 @@ def _validate_header(path: Path) -> None:
                     raise InputValidationError(
                         "NONFINITE_VALUE", f"CSV row {row_number} contains an empty cell."
                     )
+                if not _INTEGER_PATTERN.fullmatch(row[0]):
+                    raise InputValidationError(
+                        "INVALID_ROBOT_ID",
+                        f"CSV row {row_number} robot_id must be an integer 1, 2, or 3.",
+                    )
+                if row[5] not in MODE_FROM_TEXT:
+                    raise InputValidationError(
+                        "INVALID_CSV_HEADER",
+                        f"CSV row {row_number} mode must be exactly T, D, or W.",
+                    )
     except InputValidationError:
         raise
     except (OSError, UnicodeError, csv.Error) as exc:
         raise InputValidationError("INVALID_CSV_HEADER", str(exc)) from exc
 
 
-def _read_as_strings(path: Path) -> pl.DataFrame:
+def _read_frame(path: Path) -> pl.DataFrame:
     try:
         return pl.read_csv(
             path,
-            schema_overrides={name: pl.String for name in CSV_COLUMNS},
+            schema={
+                "robot_id": pl.Int64,
+                "time_s": pl.Float64,
+                "x_mm": pl.Float64,
+                "y_mm": pl.Float64,
+                "z_mm": pl.Float64,
+                "mode": pl.String,
+            },
             null_values=[],
-            infer_schema=False,
             ignore_errors=False,
             try_parse_dates=False,
             encoding="utf8",
@@ -65,7 +81,7 @@ def load_trajectory_csv(path: Path, config: Config) -> TrajectorySet:
     if not path.is_file():
         raise InputValidationError("MISSING_TRAJECTORY", "trajectory.csv is required.")
     _validate_header(path)
-    frame = _read_as_strings(path)
+    frame = _read_frame(path)
     if tuple(frame.columns) != CSV_COLUMNS:
         raise InputValidationError(
             "INVALID_CSV_HEADER", "trajectory.csv header or column order is invalid."
@@ -73,23 +89,17 @@ def load_trajectory_csv(path: Path, config: Config) -> TrajectorySet:
     if frame.height == 0:
         raise InputValidationError("MISSING_ROBOT", "trajectory.csv has no data rows.")
 
-    for column in CSV_COLUMNS:
-        if frame[column].null_count() or frame[column].str.len_chars().eq(0).any():
-            raise InputValidationError(
-                "NONFINITE_VALUE", f"Column {column} contains an empty cell."
-            )
-
-    robot_text = frame["robot_id"].to_list()
-    if any(not _INTEGER_PATTERN.fullmatch(value) for value in robot_text):
-        raise InputValidationError("INVALID_ROBOT_ID", "robot_id must be an integer 1, 2, or 3.")
+    if any(frame.null_count().row(0)):
+        raise InputValidationError("NONFINITE_VALUE", "trajectory.csv contains a null value.")
     try:
-        robot_ids = np.asarray([int(value) for value in robot_text], dtype=np.int64)
-        time_s = np.asarray(frame["time_s"].cast(pl.Float64, strict=True), dtype=np.float64)
+        robot_ids = np.asarray(frame["robot_id"], dtype=np.int64)
+        time_s = np.asarray(frame["time_s"], dtype=np.float64)
         xyz64 = np.column_stack(
-            [
-                np.asarray(frame[name].cast(pl.Float64, strict=True), dtype=np.float64)
-                for name in ("x_mm", "y_mm", "z_mm")
-            ]
+            [np.asarray(frame[name], dtype=np.float64) for name in ("x_mm", "y_mm", "z_mm")]
+        )
+        modes = np.asarray(
+            frame["mode"].replace_strict(MODE_FROM_TEXT, return_dtype=pl.UInt8),
+            dtype=np.uint8,
         )
     except (ValueError, TypeError, pl.exceptions.PolarsError) as exc:
         raise InputValidationError(
@@ -99,11 +109,6 @@ def load_trajectory_csv(path: Path, config: Config) -> TrajectorySet:
         raise InputValidationError("NONFINITE_VALUE", "CSV contains NaN or infinite values.")
     if np.any(~np.isin(robot_ids, ROBOT_IDS)):
         raise InputValidationError("INVALID_ROBOT_ID", "robot_id must be one of 1, 2, and 3.")
-
-    modes_text = frame["mode"].to_list()
-    if any(value not in MODE_FROM_TEXT for value in modes_text):
-        raise InputValidationError("INVALID_CSV_HEADER", "mode must be exactly T, D, or W.")
-    modes = np.asarray([MODE_FROM_TEXT[value] for value in modes_text], dtype=np.uint8)
 
     sorted_indices = np.lexsort((time_s, robot_ids))
     if not np.array_equal(sorted_indices, np.arange(frame.height)):

@@ -9,12 +9,11 @@ import pytest
 
 from waam_validator.dashboard.data import (
     DashboardDataError,
-    discover_jobs,
-    is_job_directory,
     latest_completed_run,
+    load_latest_matching_run,
     load_latest_run,
-    read_csv_page,
-    resolve_artifact,
+    read_csv_window,
+    resolve_single_job_artifact,
 )
 
 
@@ -29,38 +28,9 @@ def _make_job(root: Path, name: str = "part") -> Path:
 def _write_summary(run_dir: Path, status: str = "PASS") -> None:
     run_dir.mkdir(parents=True)
     (run_dir / "summary.json").write_text(
-        json.dumps({"schema_version": "1.0", "status": status}),
+        json.dumps({"schema_version": "3.0", "status": status}),
         encoding="utf-8",
     )
-
-
-def test_discover_jobs_uses_root_or_direct_children_only(tmp_path: Path) -> None:
-    direct = _make_job(tmp_path, "motor")
-    nested_parent = tmp_path / "nested"
-    nested_parent.mkdir()
-    _make_job(nested_parent, "ignored")
-    (tmp_path / "incomplete").mkdir()
-
-    assert discover_jobs(tmp_path) == [discover_jobs(tmp_path)[0]]
-    assert discover_jobs(tmp_path)[0].path == direct.resolve()
-    assert discover_jobs(direct)[0].path == direct.resolve()
-
-
-def test_job_directory_rejects_input_symlink_escape_when_supported(tmp_path: Path) -> None:
-    job = _make_job(tmp_path)
-    outside = tmp_path.parent / f"{tmp_path.name}-outside-config.yaml"
-    outside.write_text("fixture", encoding="utf-8")
-    (job / "config.yaml").unlink()
-    try:
-        try:
-            (job / "config.yaml").symlink_to(outside)
-        except OSError:
-            pytest.skip("file symlinks are not available")
-        assert is_job_directory(job) is False
-    finally:
-        if (job / "config.yaml").is_symlink():
-            (job / "config.yaml").unlink()
-        outside.unlink(missing_ok=True)
 
 
 def test_latest_completed_run_prefers_timestamp_and_suffix(tmp_path: Path) -> None:
@@ -96,10 +66,38 @@ def test_corrupt_summary_becomes_dashboard_error(tmp_path: Path) -> None:
     result = load_latest_run(job)
     assert result is not None
     assert result.status == "ERROR"
-    assert result.payload["code"] == "DASHBOARD_DATA_ERROR"
+    assert result.payload["code"] == "UI_DATA_ERROR"
 
 
-def test_csv_page_filters_sorts_and_pages(tmp_path: Path) -> None:
+def test_latest_matching_run_skips_newer_incompatible_result(tmp_path: Path) -> None:
+    job = _make_job(tmp_path)
+    compatible = job / "output" / "2026-01-01_100000"
+    _write_summary(compatible)
+    signature = {
+        filename: {
+            "size_bytes": (job / filename).stat().st_size,
+            "mtime_ns": (job / filename).stat().st_mtime_ns,
+        }
+        for filename in ("config.yaml", "trajectory.csv", "target.stl")
+    }
+    (compatible / "validation_inputs.json").write_text(
+        json.dumps({"schema_version": "3.0", "inputs": signature}),
+        encoding="utf-8",
+    )
+    incompatible = job / "output" / "2026-01-01_110000"
+    _write_summary(incompatible)
+    (incompatible / "validation_inputs.json").write_text(
+        json.dumps({"schema_version": "2.0", "inputs": signature}),
+        encoding="utf-8",
+    )
+
+    result = load_latest_matching_run(job)
+
+    assert result is not None
+    assert result.directory == compatible
+
+
+def test_csv_window_sorts_and_pages(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "collision_events.csv").write_text(
@@ -113,16 +111,15 @@ def test_csv_page_filters_sorts_and_pages(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    rows, page_count = read_csv_page(
+    window, count = read_csv_window(
         run_dir,
         "collision_events.csv",
-        page=0,
-        page_size=1,
-        sort_by=[{"column_id": "start_s", "direction": "desc"}],
-        equals={"type": "ARM_ENVELOPE"},
+        start=1,
+        end=3,
+        sort_by=[{"column_id": "start_s", "direction": "asc"}],
     )
-    assert page_count == 2
-    assert rows[0]["event_id"] == 3
+    assert count == 3
+    assert [row["event_id"] for row in window] == [1, 3]
 
 
 def test_artifact_resolution_is_allowlisted_and_contained(tmp_path: Path) -> None:
@@ -130,11 +127,11 @@ def test_artifact_resolution_is_allowlisted_and_contained(tmp_path: Path) -> Non
     run_dir = job / "output" / "2026-01-01_100000"
     _write_summary(run_dir)
 
-    assert resolve_artifact(tmp_path, "part", run_dir.name, "summary.json").is_file()
+    assert resolve_single_job_artifact(job, run_dir.name, "summary.json").is_file()
     with pytest.raises(DashboardDataError):
-        resolve_artifact(tmp_path, "part", run_dir.name, "../config.yaml")
+        resolve_single_job_artifact(job, run_dir.name, "../config.yaml")
     with pytest.raises(DashboardDataError):
-        resolve_artifact(tmp_path, "unknown", run_dir.name, "summary.json")
+        resolve_single_job_artifact(job, "../outside", "summary.json")
 
 
 def test_allocate_timestamp_fixture_is_stable() -> None:

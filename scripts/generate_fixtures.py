@@ -22,7 +22,6 @@ CSV_HEADER = ("robot_id", "time_s", "x_mm", "y_mm", "z_mm", "mode")
 
 def config(
     *,
-    visuals: bool = False,
     arm_enabled: bool = True,
     include_home: bool = False,
     workspace_radius_mm: float = 500.0,
@@ -38,11 +37,7 @@ def config(
             {
                 "id": robot_id,
                 "base_xyz_mm": list(base),
-                **(
-                    {"home_xyz_mm": [base[0], base[1], 100.0]}
-                    if include_home
-                    else {}
-                ),
+                **({"home_xyz_mm": [base[0], base[1], 100.0]} if include_home else {}),
                 "tcp_radius_mm": 20.0,
                 "arm_envelope_radius_mm": 100.0,
                 "reach_radius_mm": 2500.0,
@@ -87,16 +82,6 @@ def config(
             "minimum_layer_iou": 0.80,
             "maximum_failed_layer_ratio": 0.05,
             "area_epsilon_mm2": 0.000001,
-        },
-        "output": {
-            "save_summary_json": True,
-            "save_report_markdown": True,
-            "save_collision_events_csv": True,
-            "save_robot_metrics_csv": True,
-            "save_layer_metrics_csv": True,
-            "save_deposited_stl": True,
-            "save_static_plots": visuals,
-            "animation_sample_interval_s": 1.0,
         },
     }
 
@@ -200,13 +185,12 @@ def write_job(
     name: str,
     rows: list[tuple[object, ...]],
     *,
-    visuals: bool = False,
     arm_enabled: bool = True,
 ) -> None:
     directory = FIXTURES / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "config.yaml").write_text(
-        yaml.safe_dump(config(visuals=visuals, arm_enabled=arm_enabled), sort_keys=False),
+        yaml.safe_dump(config(arm_enabled=arm_enabled), sort_keys=False),
         encoding="utf-8",
         newline="\n",
     )
@@ -232,7 +216,7 @@ def main() -> None:
         shutil.copyfile(source / filename, example / filename)
     (example / "config.yaml").write_text(
         yaml.safe_dump(
-            config(visuals=True, include_home=True, workspace_radius_mm=250.0),
+            config(include_home=True, workspace_radius_mm=250.0),
             sort_keys=False,
         ),
         encoding="utf-8",

@@ -2,7 +2,7 @@
 
 ## 1. 문서 목적
 
-이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator 1.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
+이 문서는 경로 계획, 스케줄링, 최적화, RL, 휴리스틱 등 어떤 알고리즘을 사용하더라도 최종 WAAM 작업 계획을 WAAM Validator 1.0.0에 입력할 수 있도록 공통 산출물 계약을 정의한다.
 
 알고리즘의 내부 표현은 자유롭다. 다만 검증 전에 알고리즘 결과를 본 문서의 `trajectory.csv`로 변환하는 Exporter/Adapter를 제공해야 한다.
 
@@ -44,7 +44,7 @@ Base는 Reach와 단순 팔 선분의 시작점이고, Home은 TCP가 대기하�
 같은 개념으로 사용하면 안 된다. 현재 Validator는 Home을 시각적·경로 생성 참조로
 사용하며 trajectory 시작·종료 좌표와의 일치를 강제하지 않는다.
 
-Validator 1.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
+Validator 1.0.0은 STL scale 추정이나 trajectory–target 자동 registration을 하지 않는다. 좌표계가 다르면 입력 오류 또는 형상 검증 실패로 처리된다.
 
 ## 4. `trajectory.csv` 계약
 
@@ -200,7 +200,6 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 | `collision` | Arm Capsule 활성화·공통 안전거리, TCP 반경, 경계 접촉 및 기하 오차 |
 | `validation` | 대기 위치, layer Z, 속도, STL 검사 정책 |
 | `shape_validation` | coverage, overfill, IoU 및 실패 layer 기준 |
-| `output` | JSON, CSV, STL, PNG, HTML 결과 저장 설정 |
 
 전체 예제는 [`examples/sample_job/config.yaml`](../examples/sample_job/config.yaml)을 기준으로 삼는다.
 
@@ -233,7 +232,7 @@ workspace:
 
 ## 8. 충돌 해석에 필요한 알고리즘 주의사항
 
-Validator 1.0은 각 로봇을 Base에서 TCP까지의 XY 중심선과 폭이 있는 2D Capsule로
+Validator 1.0.0은 각 로봇을 Base에서 TCP까지의 XY 중심선과 폭이 있는 2D Capsule로
 단순화한다. 각 Robot의 `arm_envelope_radius_mm`은 물리적 대표 반경이며 전체 폭은
 2배다. 두 Robot의 요구 중심선 간격은 다음과 같다.
 
@@ -337,7 +336,7 @@ Exit code `0`이어야 한다. 이 검사는 다음을 확인한다.
 ### 11.2 완전 검증
 
 ```powershell
-waam-validator run .\validation_job --headless --json
+waam-validator run .\validation_job --json
 ```
 
 | Exit code | 의미 |
@@ -365,7 +364,7 @@ waam-validator run .\validation_job --headless --json
 - [ ] travel, deposition, wait 시간을 timestamp에 모두 반영했다.
 - [ ] 각 로봇이 안전한 주차 위치의 `W` 행으로 종료한다.
 - [ ] `waam-validator check` Exit code가 `0`이다.
-- [ ] `waam-validator run --headless --json`의 결과와 Exit code를 저장했다.
+- [ ] `waam-validator run --json`의 결과와 Exit code를 저장했다.
 
 ## 13. 요약 요구문
 
@@ -375,4 +374,4 @@ waam-validator run .\validation_job --headless --json
 
 - [`examples/sample_job/config.yaml`](../examples/sample_job/config.yaml)
 - [`examples/sample_job/trajectory.csv`](../examples/sample_job/trajectory.csv)
-- [`README.md`](README.md)
+- [루트 README](../README.md)

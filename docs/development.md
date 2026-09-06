@@ -10,7 +10,7 @@ WAAM_Validator/
 │   ├── schedule/        # 원본 interval 기반 시간·거리 통계
 │   ├── collision/       # 2D geometry, streaming 검사, event 병합
 │   ├── shape/           # D polygon, STL slicing, 형상 지표, mesh export
-│   ├── visualization/   # Matplotlib PNG와 Plotly Replay
+│   ├── visualization/   # 주문 생성용 Plotly Replay
 │   ├── reporting/       # JSON, CSV, Markdown, log와 console 출력
 │   ├── dashboard/       # 단일 작업 UI와 worker(내부 경로명은 호환상 유지)
 │   ├── cli.py           # Typer CLI
@@ -73,13 +73,22 @@ config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape, UI data/pre
 
 - Ruff target: Python 3.11, line length 100
 - mypy: `strict = true`
-- Shapely, Trimesh, Matplotlib, Plotly은 외부 typing 제약 때문에 ignore override 사용
+- Shapely, Trimesh, Plotly, Dash AG Grid는 외부 typing 제약 때문에 ignore override 사용
 
 ### Performance test
 
 ```powershell
 .\.venv\Scripts\pytest.exe -q -m performance
 ```
+
+2026-09-07 현재 Windows Python 3.11 환경의 100,000행 synthetic 측정값은 peak RSS
+`178.64 MiB`, full pipeline `2.61초`, Capsule batch 100,000건 `0.0339초`였습니다.
+이는 절대 성능 보장이 아니라 회귀 비교 기준이며, 장비와 백그라운드 부하에 따라 달라집니다.
+
+런타임은 Matplotlib, NetworkX, SciPy에 의존하지 않습니다. Target normal/body 연결은
+Validator의 parity union-find로, 수평 slicing은 Trimesh의 원시 triangle-plane 선분과
+Shapely loop 결합으로 처리합니다. 따라서 새 가상환경의 wheel smoke test에도 이 세 패키지가
+설치되지 않은 상태에서 `check`와 `run`을 반드시 포함합니다.
 
 대형 synthetic trajectory의 full pipeline 메모리와 실행 시간을 측정하므로 일반
 회귀 테스트와 분리되어 있습니다. CI/로컬 자원이 충분할 때 명시적으로 실행합니다.
@@ -88,11 +97,11 @@ config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape, UI data/pre
 
 ```powershell
 waam-validator check .\examples\sample_job
-waam-validator run .\examples\sample_job --headless --json
+waam-validator run .\examples\sample_job --json
 waam-validator ui .\examples\sample_job --port 8051
 ```
 
-UI에서는 입력 확인 → Validation 실행 → 결과 전환 → on-demand Replay 순서를
+UI에서는 입력 확인 → Validation 실행 → 결과 전환 → on-demand STL/Replay 순서를
 확인합니다. 입력·결과 화면에서 network 요청이 주기적으로 발생하지 않고, worker가
 실행 중일 때만 진행 interval이 활성화되는지도 확인합니다.
 
@@ -135,7 +144,7 @@ Target, numerical, output 오류만 예외와 코드 2~5를 사용합니다. 새
 테스트 cleanup에서도 저장소나 사용자 입력 폴더 전체를 대상으로 한 재귀 삭제를
 사용하지 마십시오.
 
-Worker가 강제 종료되면 `dashboard_status.json`만 있는 미완성 output 디렉터리가 남을
+Worker가 강제 종료되면 `.waam_state/validation-status.json`만 있는 미완성 output 폴더가 남을
 수 있습니다. 결과 선택 로직은 `summary.json` 또는 `error.json`이 있는 완료 디렉터리만
 사용합니다. 미완성 폴더는 자동 삭제하지 않으며 사용자가 경로를 확인한 뒤 정리합니다.
 
@@ -155,7 +164,6 @@ Worker가 강제 종료되면 `dashboard_status.json`만 있는 미완성 output
 - [Python API](python-api.md)
 - [결과 및 산출물 참조](results-reference.md)
 - [버전 및 호환성](versioning.md)
-- [릴리스 준비 및 검증 기록](release-readiness.md)
 - [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md)
 
 [문서 안내로 돌아가기](README.md)

@@ -17,6 +17,7 @@ from .errors import (
 )
 from .models import CollisionSimulationResult, ReachMetrics, ShapeMetrics, ValidationResult
 from .progress import ProgressCallback, ValidationProgress
+from .provenance import input_signature
 from .reporting.writers import (
     configure_file_logging,
     prepare_output_directory,
@@ -25,7 +26,6 @@ from .reporting.writers import (
 )
 from .schedule.metrics import compute_schedule_metrics
 from .shape.deposition import build_deposited_layers
-from .shape.mesh_export import export_deposited_stl
 from .shape.metrics import compute_shape_metrics
 from .shape.target import (
     determine_evaluation_layers,
@@ -36,8 +36,6 @@ from .shape.target import (
 from .trajectory.loader import load_trajectory_csv
 from .trajectory.reach import compute_reach_metrics
 from .trajectory.validator import validate_trajectory_set
-from .visualization.plots import generate_static_plots
-from .visualization.replay import generate_replay_html
 
 LOGGER = logging.getLogger("waam_validator")
 
@@ -46,8 +44,8 @@ _PROGRESS_RANGES = {
     "collision": (0.05, 0.45),
     "deposition": (0.45, 0.60),
     "target_slicing": (0.60, 0.85),
-    "shape_metrics": (0.85, 0.90),
-    "artifacts": (0.90, 1.00),
+    "shape_metrics": (0.85, 0.95),
+    "results": (0.95, 1.00),
     "completed": (1.00, 1.00),
 }
 
@@ -102,7 +100,7 @@ def _build_failure_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     speed_codes = {"DEPOSITION_SPEED_VIOLATION", "TRAVEL_SPEED_VIOLATION"}
-    for issue in messages.errors:
+    for issue in messages.violations:
         if issue.code not in speed_codes | {"ROBOT_REACH_VIOLATION"}:
             reasons.append(f"Input/process validation failed: {issue.code} - {issue.message}")
     for item in reach.robots:
@@ -118,9 +116,7 @@ def _build_failure_reasons(
             f"worst safety margin {collision.minimum_arm_safety_margin_mm:.3f} mm."
         )
     if collision.tcp_radius_event_count:
-        reasons.append(
-            f"TCP_RADIUS: {collision.tcp_radius_event_count} event(s) detected."
-        )
+        reasons.append(f"TCP_RADIUS: {collision.tcp_radius_event_count} event(s) detected.")
     thresholds = config.shape_validation
     if shape.coverage < thresholds.minimum_overall_coverage:
         reasons.append(
@@ -141,21 +137,19 @@ def _build_failure_reasons(
             f"Failed-layer ratio {shape.failed_layer_ratio:.2%} exceeds maximum "
             f"{thresholds.maximum_failed_layer_ratio:.2%}."
         )
-    speed_violations = sum(issue.code in speed_codes for issue in messages.errors)
+    speed_violations = sum(issue.code in speed_codes for issue in messages.violations)
     if speed_violations:
         reasons.append(f"Speed validation failed: {speed_violations} violating interval(s).")
-    return reasons
+    return list(dict.fromkeys(reasons))
 
 
 def run_validation(
     input_dir: Path,
     output_dir: Path | None = None,
     *,
-    headless: bool = False,
-    generate_replay: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> ValidationResult:
-    """Execute the complete validation pipeline and write configured artifacts."""
+    """Execute validation and write the fixed core result bundle."""
     resolved_input = input_dir.expanduser().resolve()
     if not resolved_input.is_dir():
         raise InputValidationError(
@@ -167,6 +161,7 @@ def run_validation(
         LOGGER.info("WAAM Validator version %s", __version__)
         _report_progress(progress_callback, "loading_inputs", "입력 파일을 읽고 있습니다.")
         resolved_input, config_path, trajectory_path, target_path = _resolve_input(resolved_input)
+        starting_signature = input_signature(resolved_input)
         LOGGER.info("Loading configuration")
         config = load_config(config_path)
         LOGGER.info("Loading trajectory")
@@ -343,26 +338,32 @@ def run_validation(
         )
         status = "PASS" if not failure_reasons else "FAIL"
         LOGGER.info(
-            "Validation findings: %d failure reasons, %d error-severity issues, %d warnings",
+            "Validation findings: %d failure reasons, %d violations, %d warnings",
             len(failure_reasons),
-            len(messages.errors),
+            len(messages.violations),
             len(messages.warnings),
         )
         for reason in failure_reasons:
             LOGGER.info("Failure reason: %s", reason)
+        if input_signature(resolved_input) != starting_signature:
+            raise InputValidationError(
+                "INPUT_CHANGED_DURING_VALIDATION",
+                "Validation 실행 중 입력 파일이 변경되었습니다. 변경이 끝난 뒤 다시 실행하세요.",
+            )
         result = ValidationResult(
             status=status,
             input_dir=resolved_input,
             output_dir=run_output,
             trajectory_rows=trajectories.row_count,
             target_watertight=bool(target_mesh.is_watertight),
+            input_signature=starting_signature,
             schedule=schedule,
             reach=reach,
             collision=collision,
             shape=shape,
             layer_metrics=layer_metrics,
-            warnings=messages.warnings,
-            errors=messages.errors,
+            warnings=list(dict.fromkeys(messages.warnings)),
+            violations=list(dict.fromkeys(messages.violations)),
             failure_reasons=failure_reasons,
             checks_enabled={
                 "arm_envelope": config.collision.check_arm_envelope,
@@ -370,31 +371,8 @@ def run_validation(
             },
         )
 
-        _report_progress(progress_callback, "artifacts", "보고서와 시각화를 생성 중입니다.")
-        if config.output.save_deposited_stl:
-            export_deposited_stl(deposited_layers, config, run_output / "deposited.stl")
-        _report_progress(progress_callback, "artifacts", "정적 시각화를 생성 중입니다.", 0.25)
-        if not headless and config.output.save_static_plots:
-            generate_static_plots(
-                trajectories,
-                config,
-                deposited_layers,
-                target_layers,
-                collision,
-                schedule,
-                layer_metrics,
-                run_output,
-            )
-        _report_progress(progress_callback, "artifacts", "결과 파일을 기록 중입니다.", 0.75)
-        if not headless and generate_replay:
-            generate_replay_html(
-                trajectories,
-                target_mesh,
-                collision,
-                config,
-                run_output / "replay.html",
-            )
-        write_result_files(result, config)
+        _report_progress(progress_callback, "results", "결과 파일을 기록 중입니다.")
+        write_result_files(result)
         LOGGER.info("Validation completed with status %s", status)
         _report_progress(
             progress_callback,

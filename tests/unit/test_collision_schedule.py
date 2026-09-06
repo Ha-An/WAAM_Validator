@@ -82,9 +82,7 @@ def test_capsule_batch_matches_scalar_and_closest_points() -> None:
     base_b = np.array([10.0, 0.0])
     tcp_a = np.array([[10.0, 10.0], [5.0, 2.0], [0.0, 0.0], [2.0, 2.0]])
     tcp_b = np.array([[0.0, 10.0], [15.0, 2.0], [13.0, 4.0], [8.0, 2.0]])
-    batch = check_arm_envelope_xy_batch(
-        base_a, tcp_a, 2.0, base_b, tcp_b, 3.0, 1.0, 1e-6, True
-    )
+    batch = check_arm_envelope_xy_batch(base_a, tcp_a, 2.0, base_b, tcp_b, 3.0, 1.0, 1e-6, True)
     for index in range(len(tcp_a)):
         scalar = check_arm_envelope_xy(
             base_a,
@@ -98,9 +96,7 @@ def test_capsule_batch_matches_scalar_and_closest_points() -> None:
             True,
         )
         assert bool(batch.collision[index]) is scalar.collision
-        assert batch.centerline_distance_mm[index] == pytest.approx(
-            scalar.centerline_distance_mm
-        )
+        assert batch.centerline_distance_mm[index] == pytest.approx(scalar.centerline_distance_mm)
         assert batch.safety_margin_mm[index] == pytest.approx(scalar.safety_margin_mm)
         assert batch.closest_a_xy_mm[index] == pytest.approx(
             (scalar.closest_a_x_mm, scalar.closest_a_y_mm)

@@ -64,10 +64,10 @@ workload imbalance    = max(completion) - min(completion)
 normalized imbalance  = workload imbalance / makespan
 ```
 
-로봇별 `deposition_ratio`, `travel_ratio`, `wait_ratio`는 각 로봇의 completion을
-분모로 하며 합이 1입니다. UI의 로봇별 상태 시간 비율 그래프는 공통 비교를 위해
-makespan을 100%로 사용하고, 먼저 끝난 로봇의 남은 시간은 Wait가 아니라
-`완료 후 비활성`으로 표시합니다.
+결과 CSV에는 completion 기준 ratio를 중복 저장하지 않습니다. UI는 공통 비교를 위해
+makespan을 100%로 사용하고 `Deposition + Travel + Wait + 완료 후 비활성`을
+로봇마다 100%로 표시합니다. 완료 후 비활성은 `makespan - completion`이며 Wait와
+구분합니다.
 
 시간 비율과 거리 비율은 같을 필요가 없습니다. 예를 들어 Travel 시간이 짧아도
 Travel 속도가 Deposition보다 훨씬 빠르면 Travel 거리가 더 클 수 있습니다.

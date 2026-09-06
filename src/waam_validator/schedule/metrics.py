@@ -38,9 +38,6 @@ def compute_schedule_metrics(trajectories: TrajectorySet) -> ScheduleMetrics:
                 deposition_time_s=deposition_time,
                 travel_time_s=travel_time,
                 wait_time_s=wait_time,
-                deposition_ratio=deposition_time / completion,
-                travel_ratio=travel_time / completion,
-                wait_ratio=wait_time / completion,
                 deposition_length_mm=deposition_length,
                 travel_length_mm=travel_length,
                 mean_deposition_speed_mm_s=(

@@ -1,42 +1,95 @@
 from __future__ import annotations
 
+import csv
 import json
 import shutil
 from pathlib import Path
 
 import pytest
-import trimesh
 import yaml
 from typer.testing import CliRunner
 
+from waam_validator import pipeline
 from waam_validator.cli import app
 from waam_validator.collision.simulator import run_collision_analysis
 from waam_validator.config.loader import load_config
 from waam_validator.errors import InputValidationError
 from waam_validator.pipeline import run_validation
 from waam_validator.progress import ValidationProgress
+from waam_validator.reporting.writers import CORE_RESULT_FILES
 from waam_validator.trajectory.loader import load_trajectory_csv
 
 
-def test_full_headless_pipeline_pass(fixture_root: Path, tmp_path: Path) -> None:
+def test_full_pipeline_writes_only_core_result_bundle(fixture_root: Path, tmp_path: Path) -> None:
     output = tmp_path / "result"
-    result = run_validation(fixture_root / "collision_free", output, headless=True)
+    result = run_validation(fixture_root / "collision_free", output)
     assert result.status == "PASS"
-    for filename in (
-        "summary.json",
-        "collision_events.csv",
-        "robot_metrics.csv",
-        "layer_metrics.csv",
-        "validation_report.md",
-        "validation_inputs.json",
-        "warnings.csv",
-        "run.log",
-        "deposited.stl",
-    ):
-        assert (output / filename).is_file()
-    assert not (output / "overview_xy.png").exists()
-    deposited = trimesh.load(output / "deposited.stl")
-    assert not deposited.is_empty
+    assert {path.name for path in output.iterdir()} == set(CORE_RESULT_FILES)
+
+
+def test_report_does_not_expose_hidden_worker_state(fixture_root: Path, tmp_path: Path) -> None:
+    output = tmp_path / "worker-result"
+
+    def worker_progress(_event: ValidationProgress) -> None:
+        state_dir = output / ".waam_state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / "validation-status.json").write_text("{}", encoding="utf-8")
+
+    run_validation(
+        fixture_root / "collision_free",
+        output,
+        progress_callback=worker_progress,
+    )
+
+    report = (output / "validation_report.md").read_text(encoding="utf-8")
+    assert ".waam_state" not in report
+    assert all(f"`{filename}`" in report for filename in CORE_RESULT_FILES)
+
+
+def test_result_csvs_reconcile_with_summary(fixture_root: Path, tmp_path: Path) -> None:
+    output = tmp_path / "reconciled"
+    result = run_validation(fixture_root / "collision_free", output)
+    summary = result.summary_dict()
+    with (output / "robot_metrics.csv").open(encoding="utf-8", newline="") as handle:
+        robots = list(csv.DictReader(handle))
+    for robot in robots:
+        completion = float(robot["completion_s"])
+        state_total = sum(
+            float(robot[field]) for field in ("deposition_time_s", "travel_time_s", "wait_time_s")
+        )
+        assert state_total == pytest.approx(completion)
+        assert completion + float(robot["inactive_after_completion_s"]) == pytest.approx(
+            summary["schedule"]["makespan_s"]
+        )
+        for mode in ("deposition", "travel"):
+            duration = float(robot[f"{mode}_time_s"])
+            length = float(robot[f"{mode}_length_mm"])
+            speed = robot[f"mean_{mode}_speed_mm_s"]
+            if duration > 0:
+                assert float(speed) == pytest.approx(length / duration)
+            else:
+                assert speed == ""
+
+    with (output / "layer_metrics.csv").open(encoding="utf-8", newline="") as handle:
+        layers = list(csv.DictReader(handle))
+    height = load_config(fixture_root / "collision_free" / "config.yaml").process.layer_height_mm
+    target_volume = sum(float(row["target_area_mm2"]) * height for row in layers)
+    deposited_volume = sum(float(row["deposited_area_mm2"]) * height for row in layers)
+    intersection_volume = sum(float(row["intersection_area_mm2"]) * height for row in layers)
+    underfill_volume = sum(float(row["underfill_area_mm2"]) * height for row in layers)
+    overfill_volume = sum(float(row["overfill_area_mm2"]) * height for row in layers)
+    shape = summary["shape"]
+    assert shape["target_volume_mm3"] == pytest.approx(target_volume)
+    assert shape["deposited_volume_mm3"] == pytest.approx(deposited_volume)
+    assert shape["intersection_volume_mm3"] == pytest.approx(intersection_volume)
+    assert shape["underfill_volume_mm3"] == pytest.approx(underfill_volume)
+    assert shape["overfill_volume_mm3"] == pytest.approx(overfill_volume)
+    assert shape["coverage"] == pytest.approx(intersection_volume / target_volume)
+    assert shape["iou"] == pytest.approx(
+        intersection_volume / (target_volume + deposited_volume - intersection_volume)
+    )
+    assert shape["evaluated_layer_count"] == len(layers)
+    assert shape["failed_layer_count"] == sum(row["passed"] == "false" for row in layers)
 
 
 def test_pipeline_reports_monotonic_measured_progress(fixture_root: Path, tmp_path: Path) -> None:
@@ -44,7 +97,6 @@ def test_pipeline_reports_monotonic_measured_progress(fixture_root: Path, tmp_pa
     result = run_validation(
         fixture_root / "collision_free",
         tmp_path / "progress",
-        headless=True,
         progress_callback=events.append,
     )
 
@@ -60,7 +112,7 @@ def test_pipeline_reports_monotonic_measured_progress(fixture_root: Path, tmp_pa
         "deposition",
         "target_slicing",
         "shape_metrics",
-        "artifacts",
+        "results",
         "completed",
     } <= stages
     assert any(event.unit == "simulation_s" for event in events)
@@ -68,21 +120,45 @@ def test_pipeline_reports_monotonic_measured_progress(fixture_root: Path, tmp_pa
     assert any(event.unit == "layers" for event in events)
 
 
+def test_pipeline_rejects_inputs_changed_during_run(
+    fixture_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_signature = pipeline.input_signature
+    calls = 0
+
+    def changing_signature(job_dir: Path) -> dict[str, dict[str, int]]:
+        nonlocal calls
+        calls += 1
+        signature = real_signature(job_dir)
+        if calls > 1:
+            signature["trajectory.csv"]["mtime_ns"] += 1
+        return signature
+
+    monkeypatch.setattr(pipeline, "input_signature", changing_signature)
+    output = tmp_path / "changed-input"
+    with pytest.raises(InputValidationError) as caught:
+        run_validation(fixture_root / "collision_free", output)
+    assert caught.value.code == "INPUT_CHANGED_DURING_VALIDATION"
+    payload = json.loads((output / "error.json").read_text(encoding="utf-8"))
+    assert payload["code"] == "INPUT_CHANGED_DURING_VALIDATION"
+
+
 def test_shape_fail_and_failure_reasons(fixture_root: Path, tmp_path: Path) -> None:
-    result = run_validation(fixture_root / "shape_underfill", tmp_path / "underfill", headless=True)
+    result = run_validation(fixture_root / "shape_underfill", tmp_path / "underfill")
     assert result.status == "FAIL"
     assert any("coverage" in reason.lower() for reason in result.failure_reasons)
 
 
 def test_capsule_result_schema_csv_report_and_log(fixture_root: Path, tmp_path: Path) -> None:
     output = tmp_path / "capsule-result"
-    result = run_validation(
-        fixture_root / "arm_envelope_near_miss", output, headless=True
-    )
+    result = run_validation(fixture_root / "arm_envelope_near_miss", output)
     summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
     arm = summary["collision"]["arm_envelope"]
 
-    assert summary["schema_version"] == "2.0"
+    assert summary["schema_version"] == "3.0"
+    assert "warnings" not in summary
+    assert "errors" not in summary
+    assert all(item["severity"] in {"warning", "violation"} for item in summary["issues"])
     assert arm["enabled"] is True
     assert arm["passed"] is False
     assert arm["minimum_safety_margin_mm"] < 0.0
@@ -93,12 +169,32 @@ def test_capsule_result_schema_csv_report_and_log(fixture_root: Path, tmp_path: 
     assert "closest_a_x_mm" in csv_header
     assert "ARM_ENVELOPE" in (output / "validation_report.md").read_text(encoding="utf-8")
     assert "Arm Envelope worst case" in (output / "run.log").read_text(encoding="utf-8")
+    with (output / "collision_events.csv").open(encoding="utf-8", newline="") as handle:
+        events = list(csv.DictReader(handle))
+    arm_events = [event for event in events if event["type"] == "ARM_ENVELOPE"]
+    tcp_events = [event for event in events if event["type"] == "TCP_RADIUS"]
+    assert len(arm_events) == summary["collision"]["arm_envelope"]["event_count"]
+    assert len(tcp_events) == summary["collision"]["tcp_radius"]["event_count"]
+    assert min(float(event["minimum_safety_margin_mm"]) for event in arm_events) == pytest.approx(
+        arm["minimum_safety_margin_mm"]
+    )
+    issue_keys = [
+        (
+            item["severity"],
+            item["code"],
+            item["robot_id"],
+            item["start_s"],
+            item["end_s"],
+        )
+        for item in summary["issues"]
+    ]
+    assert len(issue_keys) == len(set(issue_keys))
 
 
 def test_disabled_arm_check_keeps_metric_without_event_or_fail(
     fixture_root: Path, tmp_path: Path
 ) -> None:
-    result = run_validation(fixture_root / "tcp_radius", tmp_path / "tcp-only", headless=True)
+    result = run_validation(fixture_root / "tcp_radius", tmp_path / "tcp-only")
     arm = result.summary_dict()["collision"]["arm_envelope"]
 
     assert arm["enabled"] is False
@@ -127,11 +223,7 @@ def test_known_answer_jobs(
     arm_events: int,
     tcp_events: int,
 ) -> None:
-    result = run_validation(
-        fixture_root / fixture_name,
-        tmp_path / fixture_name,
-        headless=True,
-    )
+    result = run_validation(fixture_root / fixture_name, tmp_path / fixture_name)
     assert result.status == status
     assert result.collision.arm_envelope_event_count == arm_events
     assert result.collision.tcp_radius_event_count == tcp_events
@@ -196,33 +288,10 @@ def test_cli_validation_fail_returns_one(fixture_root: Path, tmp_path: Path) -> 
     assert "[Failure Reasons]" in result.stdout
 
 
-def test_visual_outputs_and_replay(fixture_root: Path, tmp_path: Path) -> None:
-    output = tmp_path / "visual"
-    result = run_validation(Path("examples/sample_job"), output, generate_replay=True)
-    assert result.status == "PASS"
-    for filename in (
-        "overview_xy.png",
-        "gantt.png",
-        "shape_metrics_by_layer.png",
-        "worst_layer_comparison.png",
-        "arm_envelope_worst_case.png",
-        "replay.html",
-    ):
-        assert (output / filename).stat().st_size > 0
-    replay_text = (output / "replay.html").read_text(encoding="utf-8")
-    assert "XY Capsule top view" in replay_text
-    assert "armRadii" in replay_text
-    assert "ARM_ENVELOPE" in replay_text
-
-
 def test_repeated_runs_have_identical_numerical_results(fixture_root: Path, tmp_path: Path) -> None:
-    first = run_validation(
-        fixture_root / "collision_free", tmp_path / "repeat-1", headless=True
-    ).summary_dict()
-    second = run_validation(
-        fixture_root / "collision_free", tmp_path / "repeat-2", headless=True
-    ).summary_dict()
-    for key in ("schedule", "collision", "shape", "failure_reasons", "warnings", "errors"):
+    first = run_validation(fixture_root / "collision_free", tmp_path / "repeat-1").summary_dict()
+    second = run_validation(fixture_root / "collision_free", tmp_path / "repeat-2").summary_dict()
+    for key in ("schedule", "collision", "shape", "failure_reasons", "issues"):
         assert first[key] == second[key]
 
 
@@ -244,10 +313,10 @@ def test_fatal_input_writes_error_json(fixture_root: Path, tmp_path: Path) -> No
     for filename in ("config.yaml", "trajectory.csv"):
         (job / filename).write_bytes((fixture_root / "collision_free" / filename).read_bytes())
     with pytest.raises(InputValidationError) as caught:
-        run_validation(job, tmp_path / "fatal-output", headless=True)
+        run_validation(job, tmp_path / "fatal-output")
     assert caught.value.code == "MISSING_TARGET"
     error_path = tmp_path / "fatal-output" / "error.json"
     payload = json.loads(error_path.read_text(encoding="utf-8"))
     assert payload["status"] == "ERROR"
     assert payload["code"] == "MISSING_TARGET"
-    assert payload["validator_version"] == "1.0"
+    assert payload["validator_version"] == "1.0.0"

@@ -8,8 +8,8 @@ from typing import Annotated
 
 import typer
 
+from .dashboard.app import run_validator_ui
 from .dashboard.data import DashboardDataError
-from .dashboard.single_app import run_validator_ui
 from .errors import ComputationError, WaamValidatorError
 from .pipeline import check_input, run_validation
 from .reporting.writers import render_console_summary, render_error_block
@@ -34,11 +34,11 @@ def run(
     ] = None,
     headless: Annotated[
         bool,
-        typer.Option("--headless", help="Skip PNG and HTML visualization."),
+        typer.Option("--headless", help="Deprecated compatibility option; core output is lean."),
     ] = False,
     replay: Annotated[
         bool,
-        typer.Option("--replay", help="Also generate the optional replay.html artifact."),
+        typer.Option("--replay", help="Deprecated; generate Replay from the result screen."),
     ] = False,
     json_output: Annotated[
         bool,
@@ -46,8 +46,18 @@ def run(
     ] = False,
 ) -> None:
     """Run the complete validation pipeline."""
+    if headless:
+        typer.echo(
+            "Warning: --headless is deprecated; Validation now always writes the lean core bundle.",
+            err=True,
+        )
+    if replay:
+        typer.echo(
+            "Warning: --replay is deprecated; generate replay.html from the result screen.",
+            err=True,
+        )
     try:
-        result = run_validation(job_dir, output, headless=headless, generate_replay=replay)
+        result = run_validation(job_dir, output)
     except WaamValidatorError as exc:
         typer.echo(render_error_block(exc, job_dir.expanduser().resolve()), err=True)
         raise typer.Exit(exc.exit_code) from None

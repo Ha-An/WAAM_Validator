@@ -98,14 +98,16 @@ waam-validator run C:\data\my_job
 
 ## 실행 옵션
 
-### Headless
+### 폐기 예정 호환 옵션
 
 ```powershell
 waam-validator run C:\data\my_job --headless
+waam-validator run C:\data\my_job --replay
 ```
 
-PNG와 HTML 시각화를 생략합니다. 핵심 JSON/CSV/보고서와 Config가 허용한
-`deposited.stl`은 유지하므로 자동화·성능 측정에 적합합니다.
+`--headless`와 `--replay`는 예전 호출을 즉시 깨뜨리지 않기 위해서만 받습니다.
+둘 다 현재 기본 경량 결과를 바꾸지 않으며 폐기 안내가 stderr에 출력됩니다.
+Replay는 UI 결과 화면에서 생성합니다.
 
 ### JSON stdout
 
@@ -116,16 +118,6 @@ waam-validator run C:\data\my_job --json
 계산 가능한 PASS/FAIL 실행에서는 stdout을 한 개의 압축 JSON 객체로 제한합니다.
 파일 생성 동작은 일반 실행과 동일합니다. 치명 오류는 stderr의 오류 블록과 종료
 코드로 전달됩니다.
-
-### Replay 동시 생성
-
-```powershell
-waam-validator run C:\data\my_job --replay
-```
-
-일반 결과에 self-contained `replay.html`을 추가합니다. 긴 makespan에서는 파일이
-커지고 생성 시간이 늘 수 있으므로 기본값은 미생성입니다. 일반적으로는 UI 결과의
-`산출물` 탭에서 frame 간격과 예상치를 확인한 뒤 생성하는 편이 효율적입니다.
 
 ### 출력 경로 지정
 
@@ -154,8 +146,8 @@ waam-validator ui C:\data\my_job --no-browser
 2. `summary.json`의 `status`와 `failure_reasons`를 확인합니다.
 3. 실패 영역에 따라 `robot_metrics.csv`, `collision_events.csv`,
    `layer_metrics.csv`를 확인합니다.
-4. 경고는 `warnings.csv`, 계산 맥락은 `run.log`에서 확인합니다.
-5. 형상 차이는 worst-layer PNG와 `deposited.stl`을 함께 봅니다.
+4. 경고와 비치명 위반은 `summary.json.issues`, 계산 맥락은 `run.log`에서 확인합니다.
+5. 필요하면 UI에서 `deposited.stl`이나 Replay를 주문 생성합니다.
 
 자세한 필드 설명은 [결과 및 산출물 참조](results-reference.md)에 있습니다.
 
@@ -168,7 +160,7 @@ waam-validator ui C:\data\my_job --no-browser
 | 입력 확인 후 실행 버튼 비활성 | 입력이 BLOCKED인지, 검사 후 파일 크기·수정 시각이 바뀌었는지 |
 | UI가 열리지 않음 | port 사용 여부, `--port` 변경, 출력된 URL 직접 접속 |
 | `FAIL`인데 결과 파일이 있음 | 정상 동작. 계산 가능한 기준 위반은 결과를 저장하고 종료 코드 1 반환 |
-| Replay가 없음 | 기본 미생성. `--replay` 또는 UI 파일·Replay 탭에서 별도 생성 |
+| Replay가 없음 | 기본 미생성. UI의 `산출물` 탭에서 별도 생성 |
 | Explicit output directory 오류 | `--output` 대상이 비어 있지 않음 |
 
 [README로 돌아가기](../README.md)

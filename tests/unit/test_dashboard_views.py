@@ -1,106 +1,45 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from waam_validator.dashboard import single_app
-from waam_validator.dashboard.app import (
-    _arm_envelope_gauge,
-    _collision_gauge,
-    _config_inspection,
-    _shape_figure,
-    _trajectory_inspection,
-)
+from waam_validator.dashboard import app
+from waam_validator.dashboard.app import _layer_display_rows
 from waam_validator.dashboard.data import DashboardDataError, JobRecord, RunRecord
-from waam_validator.dashboard.single_app import _layer_display_rows, _reach_display_rows
-
-
-def _collision_payload(*, enabled: bool, event_count: int) -> dict[str, object]:
-    return {
-        "collision": {
-            "tcp_radius": {
-                "minimum_distance_mm": 300.0,
-                "required_distance_at_minimum_mm": 300.0,
-                "event_count": event_count,
-                "enabled": enabled,
-            },
-        }
-    }
-
-
-@pytest.mark.parametrize(
-    ("enabled", "events", "expected_color"),
-    [(True, 1, "#ff6376"), (True, 0, "#21d4a3"), (False, 0, "#8fa3b8")],
+from waam_validator.dashboard.replay_service import REPLAY_STATUS
+from waam_validator.dashboard.views import (
+    _config_inspection,
+    _trajectory_inspection,
+    robot_time_figure,
+    shape_figure,
+    shape_metrics_are_uniform,
+    shape_variation_message,
 )
-def test_tcp_gauge_uses_recorded_verdict_at_touching_threshold(
-    enabled: bool, events: int, expected_color: str
-) -> None:
-    figure = _collision_gauge(_collision_payload(enabled=enabled, event_count=events))
-
-    assert figure.data[0].gauge.bar.color == expected_color
 
 
-def test_arm_gauge_shows_required_distance_and_recorded_margin() -> None:
-    figure = _arm_envelope_gauge(
-        {
-            "collision": {
-                "arm_envelope": {
-                    "enabled": True,
-                    "passed": False,
-                    "event_count": 2,
-                    "centerline_distance_at_worst_mm": 225.0,
-                    "required_distance_at_worst_mm": 250.0,
-                    "minimum_safety_margin_mm": -25.0,
-                }
-            }
-        }
-    )
-
-    assert figure.data[0].gauge.bar.color == "#ff6376"
-    assert figure.data[0].value == pytest.approx(225.0)
-    assert figure.data[0].delta.reference == pytest.approx(250.0)
-    assert "-25.00 mm" in str(figure.data[0].title.text)
+def _component_by_id(component: object, component_id: str) -> object | None:
+    if getattr(component, "id", None) == component_id:
+        return component
+    children = getattr(component, "children", None)
+    if not isinstance(children, list | tuple):
+        children = [children] if children is not None else []
+    for child in children:
+        found = _component_by_id(child, component_id)
+        if found is not None:
+            return found
+    return None
 
 
-def test_old_result_schema_requires_revalidation(fixture_root: Path, tmp_path: Path) -> None:
-    run_dir = tmp_path / "output" / "legacy"
-    run_dir.mkdir(parents=True)
-    run = RunRecord(
-        run_dir,
-        "PASS",
-        {"schema_version": "1.1", "status": "PASS"},
-        "legacy",
-    )
-
-    view = single_app._result_view(
-        "token", JobRecord("fixture", fixture_root / "collision_free"), run
-    )
-
-    assert "현재 Capsule 결과 형식이 아닙니다" in str(view)
-    assert "Validation을 다시 실행" in str(view)
-
-
-def test_one_corrupt_result_csv_does_not_discard_other_tables(
-    fixture_root: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-
-    def fake_read_csv_records(_run_dir: Path, filename: str) -> list[dict[str, object]]:
-        calls.append(filename)
-        if filename == "collision_events.csv":
-            raise DashboardDataError("collision CSV is corrupt")
-        return []
-
-    monkeypatch.setattr(single_app, "read_csv_records", fake_read_csv_records)
-    payload = {
-        "schema_version": "2.0",
-        "status": "PASS",
-        "schedule": {"makespan_s": 10.0},
+def _result_payload(status: str = "PASS") -> dict[str, object]:
+    return {
+        "schema_version": "3.0",
+        "status": status,
+        "schedule": {"makespan_s": 100.0},
         "reach": {"passed": True, "robots": []},
         "collision": {
+            "passed": True,
             "collision_event_count": 0,
             "arm_envelope": {
                 "enabled": True,
@@ -121,192 +60,285 @@ def test_one_corrupt_result_csv_does_not_discard_other_tables(
                 "minimum_distance_mm": 500.0,
                 "required_distance_at_minimum_mm": 300.0,
                 "pair": [1, 2],
+                "time_s": 2.0,
             },
         },
-        "shape": {"coverage": 1.0, "iou": 1.0, "failed_layer_count": 0},
+        "shape": {
+            "passed": True,
+            "coverage": 1.0,
+            "underfill_ratio": 0.0,
+            "overfill_ratio": 0.0,
+            "iou": 1.0,
+            "failed_layer_count": 0,
+            "evaluated_layer_count": 1,
+            "target_volume_mm3": 100.0,
+            "deposited_volume_mm3": 100.0,
+        },
         "failure_reasons": [],
-        "warnings": [],
-        "errors": [],
+        "issues": [],
     }
-    run_dir = tmp_path / "output" / "2026-01-01_000000"
+
+
+def test_context_registry_keeps_independent_folders_alive(tmp_path: Path) -> None:
+    registry = app._ContextRegistry()
+    trajectory_a = object()
+    trajectory_b = object()
+
+    token_a = registry.add(tmp_path / "a", trajectory_a)  # type: ignore[arg-type]
+    token_b = registry.add(tmp_path / "b", trajectory_b)  # type: ignore[arg-type]
+
+    assert token_a != token_b
+    assert registry.get(token_a) == (tmp_path / "a").resolve()
+    assert registry.get(token_b) == (tmp_path / "b").resolve()
+    assert registry.trajectories(token_a) is trajectory_a
+    assert registry.trajectories(token_b) is trajectory_b
+
+
+def test_context_registry_reuses_token_for_same_folder(tmp_path: Path) -> None:
+    registry = app._ContextRegistry()
+    first = object()
+    refreshed = object()
+
+    first_token = registry.add(tmp_path, first)  # type: ignore[arg-type]
+    refreshed_token = registry.add(tmp_path, refreshed)  # type: ignore[arg-type]
+
+    assert refreshed_token == first_token
+    assert registry.trajectories(first_token) is refreshed
+
+
+def test_old_result_schema_requires_revalidation(fixture_root: Path, tmp_path: Path) -> None:
+    run_dir = tmp_path / "output" / "legacy"
     run_dir.mkdir(parents=True)
-    run = RunRecord(run_dir, "PASS", payload, "2026-01-01 00:00:00")
+    run = RunRecord(run_dir, "PASS", {"schema_version": "2.0", "status": "PASS"}, "legacy")
 
-    view = single_app._result_view(
-        "token", JobRecord("fixture", fixture_root / "collision_free"), run
+    view = app._result_view("token", JobRecord("fixture", fixture_root / "collision_free"), run)
+
+    assert "schema 3.0" in str(view)
+    assert "Validation을 다시 실행" in str(view)
+
+
+def test_arm_snapshot_preserves_mm_scale_without_expanding_data_range(
+    fixture_root: Path,
+) -> None:
+    figure = app._arm_envelope_snapshot(_result_payload(), fixture_root / "collision_free")
+
+    assert figure.layout.xaxis.constrain == "domain"
+    assert figure.layout.yaxis.constrain == "domain"
+    assert figure.layout.yaxis.scaleanchor == "x"
+    assert figure.layout.xaxis.range is not None
+    assert float(figure.layout.xaxis.range[1]) - float(figure.layout.xaxis.range[0]) < 4_000
+    assert figure.layout.height == 960
+
+
+def test_result_view_preserves_selected_tab(fixture_root: Path, tmp_path: Path) -> None:
+    run = RunRecord(tmp_path, "PASS", _result_payload(), "now")
+    view = app._result_view(
+        "token",
+        JobRecord("fixture", fixture_root / "collision_free"),
+        run,
+        selected_tab="shape",
     )
 
-    assert view is not None
-    assert calls == [
-        "robot_metrics.csv",
-        "collision_events.csv",
-        "layer_metrics.csv",
-        "warnings.csv",
-    ]
+    tabs = _component_by_id(view, "result-tabs")
+    assert tabs is not None
+    assert getattr(tabs, "value", None) == "shape"
+
+
+def test_result_view_separates_shape_and_artifacts_and_keeps_shape_expanded(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    (tmp_path / "replay.html").write_text("<html></html>", encoding="utf-8")
+    run = RunRecord(tmp_path, "PASS", _result_payload(), "now")
+    view = app._result_view(
+        "token",
+        JobRecord("fixture", fixture_root / "collision_free"),
+        run,
+        selected_tab="artifacts",
+    )
+
+    tabs = _component_by_id(view, "result-tabs")
+    assert tabs is not None
+    assert getattr(tabs, "value", None) == "artifacts"
+    labels = [str(getattr(tab, "label", "")) for tab in tabs.children]
+    assert labels == ["판정 요약", "로봇·일정", "충돌 안전", "형상", "산출물"]
+
     rendered = str(view)
-    assert "TCP Radius 안전거리" in rendered
-    assert "판정 결과와 확인사항" in rendered
-    assert "형상 판정과 핵심 지표" in rendered
-    assert "검증 영역별 결론" not in rendered
-    assert "Arm Envelope 안전 여유" not in rendered
-    assert "전체 형상 판정 요약" not in rendered
+    assert "형상 판정 기준" in rendered
+    assert "동일한 Layer 그래프 펼치기" not in rendered
+    assert "형상 판정 기준 보기" not in rendered
+    assert "artifact-tab-grid" in rendered
+    assert "artifact-files-panel" in rendered
+    shape_tab = str(tabs.children[3])
+    artifacts_tab = str(tabs.children[4])
+    assert "layer-table" in shape_tab
+    assert "layer-table" not in artifacts_tab
+    assert "replay-frame" not in shape_tab
+    assert "replay-frame" in artifacts_tab
 
 
-def test_reach_result_rows_are_human_formatted() -> None:
-    rows = _reach_display_rows(
-        [
-            {
-                "robot_id": 1,
-                "passed": True,
-                "reach_radius_mm": 2000.0,
-                "maximum_reach_mm": 1845.7311685966965,
-                "minimum_margin_mm": 154.26883140330347,
-                "utilization_ratio": 0.9228655842983483,
-                "violation_point_count": 0,
-            }
-        ]
-    )
-
-    assert rows == [
-        {
-            "robot_id": "R1",
-            "passed": "PASS",
-            "reach_radius_mm": "2,000.00",
-            "maximum_reach_mm": "1,845.73",
-            "minimum_margin_mm": "154.27",
-            "utilization_ratio": "92.29%",
-            "violation_point_count": "0",
-        }
-    ]
-
-
-def test_fail_details_are_collapsed_and_payload_errors_have_a_fallback(
+def test_one_corrupt_result_csv_does_not_discard_result(
     fixture_root: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(single_app, "read_csv_records", lambda _path, _name: [])
-    payload = {
-        "schema_version": "2.0",
-        "status": "FAIL",
-        "schedule": {"makespan_s": 10.0},
-        "reach": {"passed": False, "robots": []},
-        "collision": {"passed": True, "arm_envelope": {}, "tcp_radius": {}},
-        "shape": {"passed": True},
-        "failure_reasons": ["ROBOT_REACH: R1 exceeds configured reach."],
-        "warnings": [],
-        "errors": ["ROBOT_REACH_VIOLATION - detailed reach evidence"],
-    }
+    calls: list[str] = []
+
+    def fake_read_csv_records(_run_dir: Path, filename: str) -> list[dict[str, object]]:
+        calls.append(filename)
+        if filename == "collision_events.csv":
+            raise DashboardDataError("collision CSV is corrupt")
+        return []
+
+    monkeypatch.setattr(app, "read_csv_records", fake_read_csv_records)
     run_dir = tmp_path / "output" / "2026-01-01_000000"
     run_dir.mkdir(parents=True)
-    run = RunRecord(run_dir, "FAIL", payload, "2026-01-01 00:00:00")
+    run = RunRecord(run_dir, "PASS", _result_payload(), "2026-01-01 00:00:00")
 
     rendered = str(
-        single_app._result_view(
-            "token", JobRecord("fixture", fixture_root / "collision_free"), run
-        )
+        app._result_view("token", JobRecord("fixture", fixture_root / "collision_free"), run)
     )
 
-    assert "FAIL 세부 판정 기록 1건 보기" in rendered
-    assert "detailed reach evidence" in rendered
+    assert calls == ["robot_metrics.csv", "collision_events.csv", "layer_metrics.csv"]
+    assert "TCP Radius 안전거리" in rendered
+    assert "RESULT_CSV_LOAD_ERROR" in rendered
+    assert "collision CSV is corrupt" in rendered
 
 
-def test_layer_result_rows_use_percentages_and_verdict_text() -> None:
-    rows = _layer_display_rows(
+def test_result_view_keeps_replay_failure_message_after_refresh(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    run_dir = tmp_path / "output" / "2026-01-01_000000"
+    (run_dir / REPLAY_STATUS).parent.mkdir(parents=True)
+    (run_dir / REPLAY_STATUS).write_text(
+        json.dumps(
+            {
+                "state": "FINISHED",
+                "stage": "failed",
+                "verdict": "ERROR",
+                "message": "frame planning failed",
+                "progress": 0.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    run = RunRecord(run_dir, "PASS", _result_payload(), "2026-01-01 00:00:00")
+
+    rendered = str(
+        app._result_view("token", JobRecord("fixture", fixture_root / "collision_free"), run)
+    )
+
+    assert "Replay 생성 실패" in rendered
+    assert "frame planning failed" in rendered
+
+
+def test_robot_time_figure_uses_global_makespan_and_inactive_time() -> None:
+    figure = robot_time_figure(
         [
             {
-                "layer_index": 2,
-                "z_slice_mm": 5.0,
-                "coverage": 0.999677,
-                "underfill_ratio": 0.000323,
-                "overfill_ratio": 0.0000018,
-                "iou": 0.999675,
-                "passed": True,
-            }
+                "robot_id": 1,
+                "completion_s": 80.0,
+                "deposition_time_s": 20.0,
+                "travel_time_s": 10.0,
+                "wait_time_s": 50.0,
+                "inactive_after_completion_s": 20.0,
+            },
+            {
+                "robot_id": 2,
+                "completion_s": 100.0,
+                "deposition_time_s": 25.0,
+                "travel_time_s": 25.0,
+                "wait_time_s": 50.0,
+                "inactive_after_completion_s": 0.0,
+            },
         ]
     )
 
-    assert rows[0] == {
-        "layer_index": 2,
-        "z_slice_mm": "5.00",
-        "coverage": "99.9677%",
-        "underfill_ratio": "0.0323%",
-        "overfill_ratio": "0.0002%",
-        "iou": "99.9675%",
-        "passed": "PASS",
-    }
+    assert [trace.name for trace in figure.data] == [
+        "Deposition · 적층",
+        "Travel · 비적층 이동",
+        "Wait · 위치 유지 대기",
+        "완료 후 비활성",
+    ]
+    totals = [sum(float(trace.y[index]) for trace in figure.data) for index in range(2)]
+    assert totals == pytest.approx([100.0, 100.0])
+    assert list(figure.data[-1].y) == pytest.approx([20.0, 0.0])
+    assert "Makespan: 100.00 s" in str(figure.layout.annotations[0].text)
 
 
-def test_layer_chart_only_draws_actual_per_layer_threshold() -> None:
-    figure = _shape_figure(
-        [
-            {
-                "layer_index": 1,
-                "coverage": 0.7,
-                "underfill_ratio": 0.3,
-                "overfill_ratio": 0.1,
-                "iou": 0.7,
-                "passed": False,
-            }
-        ],
+def test_shape_variation_compares_each_metric_across_layers() -> None:
+    rows = [
+        {"coverage": 0.99, "underfill_ratio": 0.01, "overfill_ratio": 0.0, "iou": 0.99},
+        {"coverage": 0.99, "underfill_ratio": 0.01, "overfill_ratio": 0.0, "iou": 0.99},
+    ]
+    assert "모든 Layer" in shape_variation_message(rows)
+    rows[1]["iou"] = 0.98
+    assert "1.0000%" in shape_variation_message(rows)
+
+
+def test_layer_result_rows_and_shape_chart() -> None:
+    source = [
         {
-            "minimum_overall_coverage": 0.95,
-            "maximum_overall_overfill_ratio": 0.05,
-            "minimum_layer_iou": 0.8,
-        },
-    )
-
+            "layer_index": 2,
+            "z_slice_mm": 5.0,
+            "coverage": 0.7,
+            "underfill_ratio": 0.3,
+            "overfill_ratio": 0.1,
+            "iou": 0.7,
+            "passed": False,
+        }
+    ]
+    rows = _layer_display_rows(source)
+    assert rows[0]["coverage"] == "70.0000%"
+    assert rows[0]["passed"] == "FAIL"
+    figure = shape_figure(source, {"minimum_layer_iou": 0.8})
     assert len(figure.layout.shapes) == 1
     assert float(figure.layout.shapes[0].y0) == 0.8
     assert any(trace.name == "실패 Layer" for trace in figure.data)
 
 
-def test_layer_chart_magnifies_small_errors_without_threshold_compression() -> None:
-    figure = _shape_figure(
-        [
-            {
-                "layer_index": 1,
-                "coverage": 0.99999,
-                "underfill_ratio": 0.00001,
-                "overfill_ratio": 0.000002,
-                "iou": 0.999988,
-                "passed": True,
-            },
-            {
-                "layer_index": 2,
-                "coverage": 0.99998,
-                "underfill_ratio": 0.00002,
-                "overfill_ratio": 0.000003,
-                "iou": 0.999977,
-                "passed": True,
-            },
-        ],
-        {"minimum_layer_iou": 0.8},
-    )
-
-    assert len(figure.layout.shapes) == 0
-    assert any(trace.name == "IoU 손실" for trace in figure.data)
-    assert float(figure.layout.yaxis.range[0]) > 0.99
-    assert float(figure.layout.yaxis2.range[1]) <= 0.001
-
-
-def test_trajectory_makespan_displays_seconds_minutes_and_hours() -> None:
-    view = _trajectory_inspection(
+def test_shape_chart_preserves_undefined_overfill_ratio() -> None:
+    source = [
         {
-            "row_count": 3,
-            "makespan_s": 7200.0,
-            "workload_imbalance_s": 0.0,
-            "robots": [],
-        }
+            "layer_index": 1,
+            "coverage": 1.0,
+            "underfill_ratio": 0.0,
+            "overfill_ratio": 0.0,
+            "iou": 1.0,
+            "passed": True,
+        },
+        {
+            "layer_index": 2,
+            "coverage": 0.0,
+            "underfill_ratio": 0.0,
+            "overfill_ratio": None,
+            "iou": 0.0,
+            "passed": False,
+        },
+    ]
+
+    figure = shape_figure(source, {"minimum_layer_iou": 0.8})
+    overfill = next(trace for trace in figure.data if trace.name == "Overfill")
+    assert list(overfill.y) == [0.0, None]
+    assert not shape_metrics_are_uniform(source)
+    assert "정의되지 않으며" in shape_variation_message(source)
+
+
+def test_trajectory_makespan_displays_seconds_and_clock_units() -> None:
+    rendered = str(
+        _trajectory_inspection(
+            {
+                "row_count": 3,
+                "makespan_s": 7200.0,
+                "workload_imbalance_s": 0.0,
+                "robots": [],
+            }
+        )
     )
-
-    rendered = str(view)
     assert "7,200.00초" in rendered
-    assert "120.00분" in rendered
-    assert "2.00시간" in rendered
+    assert "2시간 00분 00초" in rendered
 
 
-def test_config_view_distinguishes_robot_base_home_and_tcp_radius() -> None:
+def test_config_view_distinguishes_base_home_and_capsule_radius() -> None:
     rendered = str(
         _config_inspection(
             {
@@ -331,14 +363,24 @@ def test_config_view_distinguishes_robot_base_home_and_tcp_radius() -> None:
                 "collision": {"arm_clearance_mm": 50.0},
                 "validation": {},
                 "shape_validation": {},
-                "output": {},
             }
         )
     )
-
-    assert "Robot 1 Base 위치" in rendered
-    assert "Robot 1 Home TCP 위치" in rendered
-    assert "Robot 1 TCP / Arm Capsule / Reach 반경" in rendered
-    assert "R1–R1" not in rendered
+    assert "R1 Base" in rendered
+    assert "R1 Home TCP" in rendered
+    assert "R1 TCP / Arm 반경 / Reach" in rendered
     assert "충돌 이벤트 병합 최대 간격" in rendered
-    assert "Schema" not in rendered
+
+
+def test_server_grid_uses_dash_infinite_row_model_property() -> None:
+    grid = app._grid(
+        "paged-grid",
+        [("ID", "event_id")],
+        page_size=25,
+        server_side=True,
+    )
+
+    assert grid.rowModelType == "infinite"
+    assert grid.dashGridOptions["cacheBlockSize"] == 25
+    assert grid.dashGridOptions["paginationPageSizeSelector"] is False
+    assert "rowModelType" not in grid.dashGridOptions

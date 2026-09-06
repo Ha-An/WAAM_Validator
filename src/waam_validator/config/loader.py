@@ -30,6 +30,13 @@ def load_config(path: Path) -> Config:
             "schema_version is not a Config field. Remove it; WAAM Validator versions "
             "the application independently from config.yaml.",
         )
+    if "output" in data:
+        raise InputValidationError(
+            "INVALID_CONFIG_SCHEMA",
+            "The config.output section was removed. Core result files are now always "
+            "written, while deposited.stl and replay.html are generated on demand "
+            "from the WAAM Validator result screen. Remove the entire output block.",
+        )
     collision = data.get("collision")
     if isinstance(collision, dict):
         if "check_arm_crossing" in collision:
@@ -40,9 +47,7 @@ def load_config(path: Path) -> Config:
                 "the 2D Capsule collision model.",
             )
         missing_collision = [
-            name
-            for name in ("check_arm_envelope", "arm_clearance_mm")
-            if name not in collision
+            name for name in ("check_arm_envelope", "arm_clearance_mm") if name not in collision
         ]
         if missing_collision:
             raise InputValidationError(

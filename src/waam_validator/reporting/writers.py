@@ -9,10 +9,20 @@ from datetime import datetime
 from pathlib import Path
 
 from .._version import __version__
-from ..config.models import Config
 from ..constants import LIMITATIONS_TEXT
-from ..errors import OutputWriteError, ValidationIssue, WaamValidatorError
+from ..errors import OutputWriteError, WaamValidatorError
 from ..models import ValidationResult
+from ..provenance import RESULT_SCHEMA_VERSION, write_validation_input_manifest
+
+CORE_RESULT_FILES = (
+    "summary.json",
+    "validation_report.md",
+    "robot_metrics.csv",
+    "collision_events.csv",
+    "layer_metrics.csv",
+    "run.log",
+    "validation_inputs.json",
+)
 
 
 def prepare_output_directory(input_dir: Path, output_dir: Path | None) -> Path:
@@ -70,182 +80,148 @@ def _optional(value: float | None) -> str | float:
     return "" if value is None else value
 
 
-def _write_validation_input_manifest(result: ValidationResult) -> None:
-    inputs: dict[str, dict[str, int]] = {}
-    for filename in ("config.yaml", "trajectory.csv", "target.stl"):
-        stat = (result.input_dir / filename).stat()
-        inputs[filename] = {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-    (result.output_dir / "validation_inputs.json").write_text(
-        json.dumps({"schema_version": "2.0", "inputs": inputs}, ensure_ascii=False, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
-
-
-def write_result_files(result: ValidationResult, config: Config) -> None:
-    """Write all configured core artifacts plus warnings and log files."""
+def write_result_files(result: ValidationResult) -> None:
+    """Write the fixed, compact core result bundle."""
     output = result.output_dir
     try:
-        _write_validation_input_manifest(result)
-        if config.output.save_summary_json:
-            (output / "summary.json").write_text(
-                json.dumps(result.summary_dict(), ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-        if config.output.save_collision_events_csv:
-            _write_csv(
-                output / "collision_events.csv",
-                [
-                    "event_id",
-                    "type",
-                    "robot_a",
-                    "robot_b",
-                    "start_s",
-                    "end_s",
-                    "duration_s",
-                    "minimum_distance_mm",
-                    "required_distance_mm",
-                    "minimum_safety_margin_mm",
-                    "minimum_capsule_surface_clearance_mm",
-                    "minimum_distance_time_s",
-                    "closest_a_x_mm",
-                    "closest_a_y_mm",
-                    "closest_b_x_mm",
-                    "closest_b_y_mm",
-                ],
-                [
-                    {
-                        "event_id": event.event_id,
-                        "type": event.collision_type,
-                        "robot_a": event.robot_a,
-                        "robot_b": event.robot_b,
-                        "start_s": event.start_s,
-                        "end_s": event.end_s,
-                        "duration_s": event.duration_s,
-                        "minimum_distance_mm": event.minimum_distance_mm,
-                        "required_distance_mm": event.required_distance_mm,
-                        "minimum_safety_margin_mm": event.minimum_safety_margin_mm,
-                        "minimum_capsule_surface_clearance_mm": _optional(
-                            event.minimum_capsule_surface_clearance_mm
-                        ),
-                        "minimum_distance_time_s": event.minimum_distance_time_s,
-                        "closest_a_x_mm": event.closest_a_x_mm,
-                        "closest_a_y_mm": event.closest_a_y_mm,
-                        "closest_b_x_mm": event.closest_b_x_mm,
-                        "closest_b_y_mm": event.closest_b_y_mm,
-                    }
-                    for event in result.collision.events
-                ],
-            )
-        if config.output.save_robot_metrics_csv:
-            _write_csv(
-                output / "robot_metrics.csv",
-                [
-                    "robot_id",
-                    "completion_s",
-                    "deposition_time_s",
-                    "travel_time_s",
-                    "wait_time_s",
-                    "deposition_ratio",
-                    "travel_ratio",
-                    "wait_ratio",
-                    "deposition_length_mm",
-                    "travel_length_mm",
-                    "mean_deposition_speed_mm_s",
-                    "mean_travel_speed_mm_s",
-                    "reach_radius_mm",
-                    "maximum_reach_mm",
-                    "reach_margin_mm",
-                    "reach_utilization_ratio",
-                    "reach_violation_point_count",
-                ],
-                [
-                    {
-                        "robot_id": item.robot_id,
-                        "completion_s": item.completion_s,
-                        "deposition_time_s": item.deposition_time_s,
-                        "travel_time_s": item.travel_time_s,
-                        "wait_time_s": item.wait_time_s,
-                        "deposition_ratio": item.deposition_ratio,
-                        "travel_ratio": item.travel_ratio,
-                        "wait_ratio": item.wait_ratio,
-                        "deposition_length_mm": item.deposition_length_mm,
-                        "travel_length_mm": item.travel_length_mm,
-                        "mean_deposition_speed_mm_s": _optional(item.mean_deposition_speed_mm_s),
-                        "mean_travel_speed_mm_s": _optional(item.mean_travel_speed_mm_s),
-                        "reach_radius_mm": reach.reach_radius_mm,
-                        "maximum_reach_mm": reach.maximum_reach_mm,
-                        "reach_margin_mm": reach.minimum_margin_mm,
-                        "reach_utilization_ratio": reach.utilization_ratio,
-                        "reach_violation_point_count": reach.violation_point_count,
-                    }
-                    for item, reach in zip(result.schedule.robots, result.reach.robots, strict=True)
-                ],
-            )
-        if config.output.save_layer_metrics_csv:
-            _write_csv(
-                output / "layer_metrics.csv",
-                [
-                    "layer_index",
-                    "z_bottom_mm",
-                    "z_top_mm",
-                    "z_slice_mm",
-                    "target_area_mm2",
-                    "deposited_area_mm2",
-                    "intersection_area_mm2",
-                    "underfill_area_mm2",
-                    "overfill_area_mm2",
-                    "coverage",
-                    "underfill_ratio",
-                    "overfill_ratio",
-                    "iou",
-                    "passed",
-                ],
-                [
-                    {
-                        "layer_index": item.layer_index,
-                        "z_bottom_mm": item.z_bottom_mm,
-                        "z_top_mm": item.z_top_mm,
-                        "z_slice_mm": item.z_slice_mm,
-                        "target_area_mm2": item.target_area_mm2,
-                        "deposited_area_mm2": item.deposited_area_mm2,
-                        "intersection_area_mm2": item.intersection_area_mm2,
-                        "underfill_area_mm2": item.underfill_area_mm2,
-                        "overfill_area_mm2": item.overfill_area_mm2,
-                        "coverage": item.coverage,
-                        "underfill_ratio": item.underfill_ratio,
-                        "overfill_ratio": _optional(item.overfill_ratio),
-                        "iou": item.iou,
-                        "passed": str(item.passed).lower(),
-                    }
-                    for item in result.layer_metrics
-                ],
-            )
-        _write_warnings(output / "warnings.csv", result.warnings + result.errors)
-        if config.output.save_report_markdown:
-            (output / "validation_report.md").write_text(_render_markdown(result), encoding="utf-8")
+        write_validation_input_manifest(
+            result.input_dir,
+            result.output_dir,
+            result.input_signature,
+        )
+        (output / "summary.json").write_text(
+            json.dumps(result.summary_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _write_csv(
+            output / "collision_events.csv",
+            [
+                "event_id",
+                "type",
+                "robot_a",
+                "robot_b",
+                "start_s",
+                "end_s",
+                "duration_s",
+                "minimum_distance_mm",
+                "required_distance_mm",
+                "minimum_safety_margin_mm",
+                "minimum_capsule_surface_clearance_mm",
+                "minimum_distance_time_s",
+                "closest_a_x_mm",
+                "closest_a_y_mm",
+                "closest_b_x_mm",
+                "closest_b_y_mm",
+            ],
+            [
+                {
+                    "event_id": event.event_id,
+                    "type": event.collision_type,
+                    "robot_a": event.robot_a,
+                    "robot_b": event.robot_b,
+                    "start_s": event.start_s,
+                    "end_s": event.end_s,
+                    "duration_s": event.duration_s,
+                    "minimum_distance_mm": event.minimum_distance_mm,
+                    "required_distance_mm": event.required_distance_mm,
+                    "minimum_safety_margin_mm": event.minimum_safety_margin_mm,
+                    "minimum_capsule_surface_clearance_mm": _optional(
+                        event.minimum_capsule_surface_clearance_mm
+                    ),
+                    "minimum_distance_time_s": event.minimum_distance_time_s,
+                    "closest_a_x_mm": event.closest_a_x_mm,
+                    "closest_a_y_mm": event.closest_a_y_mm,
+                    "closest_b_x_mm": event.closest_b_x_mm,
+                    "closest_b_y_mm": event.closest_b_y_mm,
+                }
+                for event in result.collision.events
+            ],
+        )
+        _write_csv(
+            output / "robot_metrics.csv",
+            [
+                "robot_id",
+                "completion_s",
+                "deposition_time_s",
+                "travel_time_s",
+                "wait_time_s",
+                "inactive_after_completion_s",
+                "deposition_length_mm",
+                "travel_length_mm",
+                "mean_deposition_speed_mm_s",
+                "mean_travel_speed_mm_s",
+                "reach_radius_mm",
+                "maximum_reach_mm",
+                "reach_margin_mm",
+                "reach_utilization_ratio",
+                "reach_violation_point_count",
+            ],
+            [
+                {
+                    "robot_id": item.robot_id,
+                    "completion_s": item.completion_s,
+                    "deposition_time_s": item.deposition_time_s,
+                    "travel_time_s": item.travel_time_s,
+                    "wait_time_s": item.wait_time_s,
+                    "inactive_after_completion_s": max(
+                        0.0, result.schedule.makespan_s - item.completion_s
+                    ),
+                    "deposition_length_mm": item.deposition_length_mm,
+                    "travel_length_mm": item.travel_length_mm,
+                    "mean_deposition_speed_mm_s": _optional(item.mean_deposition_speed_mm_s),
+                    "mean_travel_speed_mm_s": _optional(item.mean_travel_speed_mm_s),
+                    "reach_radius_mm": reach.reach_radius_mm,
+                    "maximum_reach_mm": reach.maximum_reach_mm,
+                    "reach_margin_mm": reach.minimum_margin_mm,
+                    "reach_utilization_ratio": reach.utilization_ratio,
+                    "reach_violation_point_count": reach.violation_point_count,
+                }
+                for item, reach in zip(result.schedule.robots, result.reach.robots, strict=True)
+            ],
+        )
+        _write_csv(
+            output / "layer_metrics.csv",
+            [
+                "layer_index",
+                "z_bottom_mm",
+                "z_top_mm",
+                "z_slice_mm",
+                "target_area_mm2",
+                "deposited_area_mm2",
+                "intersection_area_mm2",
+                "underfill_area_mm2",
+                "overfill_area_mm2",
+                "coverage",
+                "underfill_ratio",
+                "overfill_ratio",
+                "iou",
+                "passed",
+            ],
+            [
+                {
+                    "layer_index": item.layer_index,
+                    "z_bottom_mm": item.z_bottom_mm,
+                    "z_top_mm": item.z_top_mm,
+                    "z_slice_mm": item.z_slice_mm,
+                    "target_area_mm2": item.target_area_mm2,
+                    "deposited_area_mm2": item.deposited_area_mm2,
+                    "intersection_area_mm2": item.intersection_area_mm2,
+                    "underfill_area_mm2": item.underfill_area_mm2,
+                    "overfill_area_mm2": item.overfill_area_mm2,
+                    "coverage": item.coverage,
+                    "underfill_ratio": item.underfill_ratio,
+                    "overfill_ratio": _optional(item.overfill_ratio),
+                    "iou": item.iou,
+                    "passed": str(item.passed).lower(),
+                }
+                for item in result.layer_metrics
+            ],
+        )
+        (output / "validation_report.md").write_text(_render_markdown(result), encoding="utf-8")
     except OutputWriteError:
         raise
     except OSError as exc:
         raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
-
-
-def _write_warnings(path: Path, issues: list[ValidationIssue]) -> None:
-    _write_csv(
-        path,
-        ["severity", "code", "message", "robot_id", "start_s", "end_s"],
-        [
-            {
-                "severity": issue.severity,
-                "code": issue.code,
-                "message": issue.message,
-                "robot_id": "" if issue.robot_id is None else issue.robot_id,
-                "start_s": _optional(issue.start_s),
-                "end_s": _optional(issue.end_s),
-            }
-            for issue in issues
-        ],
-    )
 
 
 def _render_markdown(result: ValidationResult) -> str:
@@ -266,11 +242,9 @@ def _render_markdown(result: ValidationResult) -> str:
         or "None"
     )
     warnings = "\n".join(f"- {item.display()}" for item in result.warnings) or "None"
-    errors = "\n".join(f"- {item.display()}" for item in result.errors) or "None"
-    output_names = {path.name for path in result.output_dir.iterdir()}
-    output_names.add("validation_report.md")
-    outputs = "\n".join(f"- `{name}`" for name in sorted(output_names))
-    return f"""# WAAM Plan Validation Report
+    violations = "\n".join(f"- {item.display()}" for item in result.violations) or "None"
+    outputs = "\n".join(f"- `{name}`" for name in CORE_RESULT_FILES)
+    return f"""# WAAM Validator Report
 
 ## Overall Result
 
@@ -307,6 +281,11 @@ def _render_markdown(result: ValidationResult) -> str:
 
 ## Shape
 
+- Target layer-integrated volume: {result.shape.target_volume_mm3:.3f} mm³
+- Deposited volume: {result.shape.deposited_volume_mm3:.3f} mm³
+- Intersection volume: {result.shape.intersection_volume_mm3:.3f} mm³
+- Underfill volume: {result.shape.underfill_volume_mm3:.3f} mm³
+- Overfill volume: {result.shape.overfill_volume_mm3:.3f} mm³
 - Coverage: {result.shape.coverage:.2%}
 - Underfill: {result.shape.underfill_ratio:.2%}
 - Overfill: {result.shape.overfill_ratio:.2%}
@@ -321,12 +300,12 @@ def _render_markdown(result: ValidationResult) -> str:
 
 {warnings}
 
-## Error-severity Validation Issues
+## Validation Violations
 
-These are completed validation findings that contribute to a normal `FAIL`. They do not mean
-that the validation pipeline ended with `ERROR`.
+These findings contribute to a normal `FAIL`; they do not mean that the pipeline ended with
+the fatal status `ERROR`.
 
-{errors}
+{violations}
 
 ## Output Files
 
@@ -341,7 +320,7 @@ that the validation pipeline ended with `ERROR`.
 def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Path) -> None:
     """Best-effort minimal fatal error artifact."""
     payload = {
-        "schema_version": "2.0",
+        "schema_version": RESULT_SCHEMA_VERSION,
         "validator_version": __version__,
         "status": "ERROR",
         "code": error.code,
@@ -404,6 +383,8 @@ def render_console_summary(result: ValidationResult) -> str:
             "[Shape]",
             f"Target volume    : {result.shape.target_volume_mm3 / 1_000_000:.3f} L",
             f"Deposited volume : {result.shape.deposited_volume_mm3 / 1_000_000:.3f} L",
+            f"Underfill volume : {result.shape.underfill_volume_mm3 / 1_000_000:.3f} L",
+            f"Overfill volume  : {result.shape.overfill_volume_mm3 / 1_000_000:.3f} L",
             f"Coverage         : {_percent(result.shape.coverage)}",
             f"Underfill        : {_percent(result.shape.underfill_ratio)}",
             f"Overfill         : {_percent(result.shape.overfill_ratio)}",
@@ -423,7 +404,7 @@ def render_console_summary(result: ValidationResult) -> str:
     lines.extend(["", "[Warnings]"])
     if result.warnings:
         lines.append(
-            f"{len(result.warnings)} warning(s). See warnings.csv and validation_report.md."
+            f"{len(result.warnings)} warning(s). See summary.json and validation_report.md."
         )
     else:
         lines.append("None")

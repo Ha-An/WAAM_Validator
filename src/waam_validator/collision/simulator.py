@@ -193,9 +193,7 @@ class CollisionEventAccumulator:
                 minimum_distance_mm=active.minimum_distance_mm,
                 required_distance_mm=active.required_distance_mm,
                 minimum_safety_margin_mm=active.minimum_safety_margin_mm,
-                minimum_capsule_surface_clearance_mm=(
-                    active.minimum_capsule_surface_clearance_mm
-                ),
+                minimum_capsule_surface_clearance_mm=(active.minimum_capsule_surface_clearance_mm),
                 minimum_distance_time_s=active.minimum_distance_time_s,
                 closest_a_x_mm=active.closest_a_x_mm,
                 closest_a_y_mm=active.closest_a_y_mm,
@@ -292,9 +290,7 @@ def run_collision_analysis(
                 minimum_arm_margin = local_arm_margin
                 minimum_arm_distance = float(arm.centerline_distance_mm[arm_minimum_index])
                 minimum_arm_required = arm.required_distance_mm
-                minimum_arm_surface = float(
-                    arm.capsule_surface_clearance_mm[arm_minimum_index]
-                )
+                minimum_arm_surface = float(arm.capsule_surface_clearance_mm[arm_minimum_index])
                 minimum_arm_pair = (robot_a, robot_b)
                 minimum_arm_time = float(times[arm_minimum_index])
                 point_a = arm.closest_a_xy_mm[arm_minimum_index]

@@ -32,7 +32,7 @@ def _rgba(hex_color: str, alpha: float) -> str:
 
 @dataclass(slots=True, frozen=True)
 class ReplayGenerationStats:
-    """Small generation summary persisted by the dashboard worker."""
+    """Small generation summary persisted by the UI worker."""
 
     frame_count: int
     deposition_point_count: int
@@ -44,6 +44,83 @@ def _events(
     return collision.events if isinstance(collision, CollisionSimulationResult) else collision
 
 
+def _evenly_sample_times(values: Sequence[float], count: int) -> list[float]:
+    """Select deterministic, time-distributed values without exceeding ``count``."""
+    unique = sorted(set(values))
+    if count <= 0 or not unique:
+        return []
+    if len(unique) <= count:
+        return unique
+    indices = np.linspace(0, len(unique) - 1, num=count, dtype=np.int64)
+    return [unique[int(index)] for index in np.unique(indices)]
+
+
+def _collision_keyframes(
+    events: Sequence[CollisionEvent],
+    makespan: float,
+    budget: int,
+    excluded: set[float],
+) -> list[float]:
+    """Prioritize worst instants, then distribute remaining event boundaries in time."""
+    if budget <= 0 or not events:
+        return []
+
+    valid_events = [
+        event for event in events if 0.0 <= float(event.minimum_distance_time_s) <= makespan
+    ]
+    selected: set[float] = set()
+    minimum_times = sorted(
+        {
+            float(event.minimum_distance_time_s)
+            for event in valid_events
+            if float(event.minimum_distance_time_s) not in excluded
+        }
+    )
+    if len(minimum_times) <= budget:
+        selected.update(minimum_times)
+    else:
+        # Preserve half of the most severe collision instants and use the rest
+        # for deterministic temporal coverage across the complete replay.
+        severe_budget = max(1, budget // 2)
+        for event in sorted(
+            valid_events,
+            key=lambda item: (
+                float(item.minimum_safety_margin_mm),
+                float(item.minimum_distance_time_s),
+                item.collision_type,
+                int(item.robot_a),
+                int(item.robot_b),
+                int(item.event_id),
+            ),
+        ):
+            value = float(event.minimum_distance_time_s)
+            if value in excluded or value in selected:
+                continue
+            selected.add(value)
+            if len(selected) >= severe_budget:
+                break
+        remaining = budget - len(selected)
+        selected.update(
+            _evenly_sample_times(
+                [value for value in minimum_times if value not in selected],
+                remaining,
+            )
+        )
+
+    remaining = budget - len(selected)
+    if remaining > 0:
+        boundaries = [
+            float(value)
+            for event in events
+            for value in (event.start_s, event.end_s)
+            if 0.0 <= float(value) <= makespan
+            and float(value) not in excluded
+            and float(value) not in selected
+        ]
+        selected.update(_evenly_sample_times(boundaries, remaining))
+    return sorted(selected)
+
+
 def build_replay_frame_times(
     trajectories: TrajectorySet,
     collision: CollisionSimulationResult | Sequence[CollisionEvent],
@@ -51,44 +128,46 @@ def build_replay_frame_times(
     *,
     max_frames: int = _MAX_REPLAY_FRAMES,
 ) -> list[float]:
-    """Build bounded regular frames while preserving collision boundaries."""
+    """Build bounded frames with representative collision and mode keyframes.
+
+    Regular timeline frames are mandatory. Collision minima and boundaries are
+    supplemental keyframes: when a result contains more events than the safety
+    budget permits, the worst collision instants and time-distributed event
+    boundaries are retained instead of rejecting the complete Replay.
+    """
     if not math.isfinite(interval_s) or interval_s <= 0:
         raise ValueError("Replay frame interval must be a positive finite number.")
     makespan = max(float(item.time_s[-1]) for item in trajectories.robots)
-    event_times = {
-        float(value)
-        for event in _events(collision)
-        for value in (event.start_s, event.end_s)
-        if 0.0 <= float(value) <= makespan
+    regular = {
+        *np.arange(0.0, makespan, interval_s, dtype=np.float64).tolist(),
+        0.0,
+        makespan,
     }
-    essential = {0.0, makespan, *event_times}
-    if len(essential) > max_frames:
+    if len(regular) > max_frames:
         raise ValueError(
-            f"Collision boundaries require {len(essential):,} frames, exceeding the "
-            f"{max_frames:,}-frame safety limit."
-        )
-
-    regular = np.arange(0.0, makespan, interval_s, dtype=np.float64).tolist()
-    regular_with_essential = {*regular, *essential}
-    if len(regular_with_essential) > max_frames:
-        raise ValueError(
-            f"Replay interval creates {len(regular_with_essential):,} regular frames, "
+            f"Replay interval creates {len(regular):,} regular frames, "
             f"exceeding the {max_frames:,}-frame safety limit."
         )
+
     mode_changes: set[float] = set()
     for trajectory in trajectories.robots:
         changed = np.flatnonzero(trajectory.mode[1:] != trajectory.mode[:-1]) + 1
         mode_changes.update(float(trajectory.time_s[index]) for index in changed)
-    base_frames = regular_with_essential
-    optional = sorted(mode_changes - base_frames)
+    optional_modes = sorted(mode_changes - regular)
     mode_budget = min(
-        max_frames - len(base_frames),
-        max(0, math.ceil(len(base_frames) * 0.1)),
+        len(optional_modes),
+        max_frames - len(regular),
+        max(0, math.ceil(len(regular) * 0.1)),
     )
-    if len(optional) > mode_budget:
-        indices = np.linspace(0, len(optional) - 1, num=mode_budget, dtype=np.int64)
-        optional = [optional[int(index)] for index in np.unique(indices)]
-    return sorted([*base_frames, *optional])
+    collision_budget = max_frames - len(regular) - mode_budget
+    collision_frames = _collision_keyframes(
+        list(_events(collision)),
+        makespan,
+        collision_budget,
+        regular,
+    )
+    mode_frames = _evenly_sample_times(optional_modes, mode_budget)
+    return sorted({*regular, *collision_frames, *mode_frames})
 
 
 def _deposition_path(trajectory: RobotTrajectory) -> dict[str, list[float | None]]:
@@ -321,7 +400,7 @@ def generate_replay_html(
 ) -> ReplayGenerationStats:
     """Write an offline replay without duplicating the complete D path per frame."""
     try:
-        interval = config.output.animation_sample_interval_s if interval_s is None else interval_s
+        interval = 1.0 if interval_s is None else interval_s
         events = list(_events(collision))
         frame_times = build_replay_frame_times(trajectories, events, interval)
         positions: list[list[list[float]]] = []

@@ -1,12 +1,13 @@
 # Config 참조
 
-`config.yaml`은 한 WAAM 작업의 로봇 배치, 계산 해상도, 공정 기준값, 충돌·형상
-합격 기준과 저장할 산출물을 정의합니다. Config 자체에는 버전 필드를 두지 않습니다.
+`config.yaml`은 한 WAAM 작업의 로봇 배치, 계산 해상도, 공정 기준값과 충돌·형상
+합격 기준을 정의합니다. Config 자체에는 버전 필드를 두지 않습니다.
 WAAM Validator 애플리케이션 버전과 Config 항목은 독립적으로 관리하며,
 `schema_version`을 포함한 알 수 없는 필드는 오타로 간주해 거부합니다. 숫자에는
 `NaN`과 무한대를 사용할 수 없습니다.
 
-완전한 파일 예시는 [sample config](../examples/sample_job/config.yaml)를 참고하십시오.
+공식 참조 설정 파일은 저장소 루트의 [config.yaml](../config.yaml)입니다. 실행 가능한
+소형 입력 묶음은 별도의 [sample job](../examples/sample_job/config.yaml)을 참고하십시오.
 
 ## 최상위 구조
 
@@ -18,7 +19,6 @@ workspace: { ... }
 collision: { ... }
 validation: { ... }
 shape_validation: { ... }
-output: { ... }
 ```
 
 별도 설명이 없으면 거리와 좌표는 밀리미터(mm), 시간은 초(s), 속도는
@@ -148,28 +148,22 @@ Deposition(재료를 적층하며 이동) 구간은 중심선뿐 아니라 명�
 모두 만족해야 합니다. Underfill은 Coverage와 같은 교집합을 반대 관점에서 나타내며
 `Underfill ratio = 1 - Coverage`입니다.
 
-## `output`: 결과 파일 생성 정책
+## 결과 파일 정책
 
-| 필드 | 타입·제약 | 상세 의미 |
-| --- | --- | --- |
-| `save_summary_json` | bool | 최종 상태와 핵심 수치가 담긴 `summary.json`을 저장합니다. UI에서 결과를 읽으려면 `true`를 권장합니다. |
-| `save_report_markdown` | bool | 사람이 읽는 `validation_report.md`를 저장합니다. |
-| `save_collision_events_csv` | bool | 충돌 종류·로봇 쌍·시간·대표 위치를 `collision_events.csv`에 저장합니다. |
-| `save_robot_metrics_csv` | bool | 로봇별 시간·거리·평균속도·Reach 지표를 `robot_metrics.csv`에 저장합니다. |
-| `save_layer_metrics_csv` | bool | 레이어별 Coverage·Underfill·Overfill·IoU를 `layer_metrics.csv`에 저장합니다. |
-| `save_deposited_stl` | bool | trajectory와 명목 비드 설정으로 재구성한 적층 형상을 `deposited.stl`로 저장합니다. |
-| `save_static_plots` | bool | 일반 실행에서 Gantt와 형상 비교 등의 PNG를 저장합니다. Headless 실행에서는 생략됩니다. |
-| `animation_sample_interval_s` | float, `> 0` | 라이브러리에서 Replay를 직접 생성할 때 별도 간격을 주지 않으면 사용하는 기본 프레임 시간 간격입니다. UI에서는 사용자가 선택한 프레임 간격이 우선합니다. 충돌 검사 해상도인 `max_time_step_s`와는 무관합니다. |
+Config는 결과 파일 생성을 제어하지 않습니다. Validation은 schema 3.0의 핵심
+JSON·CSV·보고서·로그·입력 지문을 항상 기록합니다. 화면과 중복되는 정적 PNG는
+지원하지 않습니다. `deposited.stl`과 `replay.html`은 Validation 완료 후 UI의
+`산출물` 탭에서 필요한 경우에만 생성합니다.
 
-결과 화면의 모든 탭을 사용하려면 `save_summary_json`, 세 metrics CSV와
-`save_report_markdown`을 `true`로 두는 것을 권장합니다. 저장을 꺼도 내부 판정은
-수행되지만 해당 화면이나 다운로드 항목은 비어 있을 수 있습니다.
+구형 Config에 `output:` 블록이 남아 있으면 오타를 조용히 무시하지 않고
+`INVALID_CONFIG_SCHEMA`로 중단합니다. 블록 전체를 삭제하십시오. 파일 목록과 주문
+생성 절차는 [결과 참조](results-reference.md)를 확인하십시오.
 
 ## Config 참조 기준
 
-아래 파일은 모든 필수 항목과 선택적인 Home·경로 생성 참조값을 함께 보여주는 기준
-예제입니다. 수치는 장비와 공정에 맞게 변경해야 하며, 예제값 자체가 안전을 보증하지
-않습니다.
+아래 내용은 저장소 루트의 [config.yaml](../config.yaml)과 같은 공식 참조 기준입니다.
+모든 필수 항목과 선택적인 Home·경로 생성 참조값을 함께 보여줍니다. 수치는 장비와
+공정에 맞게 변경해야 하며, 참조값 자체가 안전을 보증하지 않습니다.
 
 ```yaml
 simulation:
@@ -233,15 +227,6 @@ shape_validation:
   minimum_layer_iou: 0.80
   maximum_failed_layer_ratio: 0.05
   area_epsilon_mm2: 1.0e-6
-output:
-  save_summary_json: true
-  save_report_markdown: true
-  save_collision_events_csv: true
-  save_robot_metrics_csv: true
-  save_layer_metrics_csv: true
-  save_deposited_stl: true
-  save_static_plots: true
-  animation_sample_interval_s: 5.0
 ```
 
 [문서 안내로 돌아가기](README.md)

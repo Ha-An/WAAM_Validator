@@ -1,4 +1,4 @@
-"""Subprocess entry point for on-demand dashboard replay generation."""
+"""Subprocess entry point for on-demand UI Replay generation."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import Any
 from ..config.loader import load_config
 from ..errors import ValidationMessages, WaamValidatorError
 from ..models import CollisionEvent
+from ..provenance import RESULT_SCHEMA_VERSION, input_signature, verify_validation_inputs
 from ..shape.target import load_target_mesh
 from ..trajectory.loader import load_trajectory_csv
 from ..trajectory.validator import validate_trajectory_set
@@ -21,8 +22,6 @@ from ..visualization.replay import generate_replay_html
 from .replay_service import (
     REPLAY_MANIFEST,
     REPLAY_STATUS,
-    input_signature,
-    verify_validation_inputs,
     write_json_atomic,
 )
 
@@ -139,7 +138,7 @@ def run_replay_worker(job_dir: Path, run_dir: Path, interval_s: float) -> int:
         duration_s = time.monotonic() - started
         size_bytes = (run_dir / "replay.html").stat().st_size
         manifest = {
-            "schema_version": "2.0",
+            "schema_version": RESULT_SCHEMA_VERSION,
             "status": "READY",
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "interval_s": interval_s,

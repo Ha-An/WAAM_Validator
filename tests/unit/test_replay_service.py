@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import csv
 import json
-import os
 from pathlib import Path
 
 from waam_validator.dashboard.data import JobRecord, RunRecord
 from waam_validator.dashboard.replay_service import (
     estimate_replay,
     preset_interval_s,
-    verify_validation_inputs,
-    write_validation_input_manifest,
 )
+from waam_validator.provenance import verify_validation_inputs, write_validation_input_manifest
 
 
 def _records(tmp_path: Path, makespan_s: float = 99_891.0) -> tuple[JobRecord, RunRecord]:
@@ -52,6 +51,31 @@ def test_one_second_interval_is_rejected_for_long_job(tmp_path: Path) -> None:
     assert "2,000" in estimate.warning
 
 
+def test_many_collision_events_are_budgeted_instead_of_rejected(tmp_path: Path) -> None:
+    job, run = _records(tmp_path, makespan_s=112_616.0)
+    run.payload["collision"] = {"collision_event_count": 1_199}
+    with (run.directory / "collision_events.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=("start_s", "end_s", "minimum_distance_time_s"),
+        )
+        writer.writeheader()
+        for index in range(1_199):
+            writer.writerow(
+                {
+                    "start_s": index * 10.0,
+                    "end_s": index * 10.0 + 4.0,
+                    "minimum_distance_time_s": index * 10.0 + 2.0,
+                }
+            )
+
+    estimate = estimate_replay(job, run, 240.0)
+
+    assert estimate.allowed is True
+    assert estimate.frame_count == 2_000
+    assert "대표 경계" in estimate.warning
+
+
 def test_validation_input_manifest_detects_later_change(tmp_path: Path) -> None:
     job, run = _records(tmp_path)
     write_validation_input_manifest(job.path, run.directory)
@@ -63,10 +87,10 @@ def test_validation_input_manifest_detects_later_change(tmp_path: Path) -> None:
     assert "다시 실행" in message
 
 
-def test_schema_20_result_without_manifest_uses_safe_legacy_match(tmp_path: Path) -> None:
+def test_schema_30_result_without_manifest_requires_revalidation(tmp_path: Path) -> None:
     job, run = _records(tmp_path)
     payload = {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "status": "PASS",
         "input": {"directory": str(job.path.resolve())},
     }
@@ -74,21 +98,18 @@ def test_schema_20_result_without_manifest_uses_safe_legacy_match(tmp_path: Path
 
     matches, message = verify_validation_inputs(job.path, run.directory)
 
-    assert matches is True
-    assert "수정 시각" in message
+    assert matches is False
+    assert "Validation" in message
 
 
-def test_legacy_match_rejects_input_newer_than_result(tmp_path: Path) -> None:
+def test_schema_20_result_is_not_accepted(tmp_path: Path) -> None:
     job, run = _records(tmp_path)
     payload = {
         "schema_version": "2.0",
         "status": "PASS",
         "input": {"directory": str(job.path.resolve())},
     }
-    summary_path = run.directory / "summary.json"
-    summary_path.write_text(json.dumps(payload), encoding="utf-8")
-    newer_ns = summary_path.stat().st_mtime_ns + 1_000_000_000
-    os.utime(job.path / "trajectory.csv", ns=(newer_ns, newer_ns))
+    (run.directory / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
 
     matches, message = verify_validation_inputs(job.path, run.directory)
 

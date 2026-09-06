@@ -9,11 +9,11 @@ from typing import Any, Literal
 
 @dataclass(slots=True, frozen=True)
 class ValidationIssue:
-    """One deterministic validation warning or non-fatal process error."""
+    """One deterministic warning or non-fatal validation violation."""
 
     code: str
     message: str
-    severity: Literal["warning", "error"]
+    severity: Literal["warning", "violation"]
     robot_id: int | None = None
     start_s: float | None = None
     end_s: float | None = None
@@ -28,19 +28,21 @@ class ValidationMessages:
     """Collected non-fatal messages produced by validators."""
 
     warnings: list[ValidationIssue] = field(default_factory=list)
-    errors: list[ValidationIssue] = field(default_factory=list)
+    violations: list[ValidationIssue] = field(default_factory=list)
 
     def warning(self, code: str, message: str, **context: Any) -> None:
         self.warnings.append(
             ValidationIssue(code=code, message=message, severity="warning", **context)
         )
 
-    def error(self, code: str, message: str, **context: Any) -> None:
-        self.errors.append(ValidationIssue(code=code, message=message, severity="error", **context))
+    def violation(self, code: str, message: str, **context: Any) -> None:
+        self.violations.append(
+            ValidationIssue(code=code, message=message, severity="violation", **context)
+        )
 
     def extend(self, other: ValidationMessages) -> None:
         self.warnings.extend(other.warnings)
-        self.errors.extend(other.errors)
+        self.violations.extend(other.violations)
 
 
 class WaamValidatorError(Exception):

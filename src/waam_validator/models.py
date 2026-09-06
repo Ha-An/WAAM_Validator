@@ -12,6 +12,7 @@ from shapely.geometry.base import BaseGeometry
 
 from ._version import __version__
 from .errors import ValidationIssue
+from .provenance import RESULT_SCHEMA_VERSION, InputSignature
 
 
 @dataclass(slots=True)
@@ -114,9 +115,6 @@ class RobotMetrics:
     deposition_time_s: float
     travel_time_s: float
     wait_time_s: float
-    deposition_ratio: float
-    travel_ratio: float
-    wait_ratio: float
     deposition_length_mm: float
     travel_length_mm: float
     mean_deposition_speed_mm_s: float | None
@@ -210,13 +208,14 @@ class ValidationResult:
     output_dir: Path
     trajectory_rows: int
     target_watertight: bool
+    input_signature: InputSignature
     schedule: ScheduleMetrics
     reach: ReachMetrics
     collision: CollisionSimulationResult
     shape: ShapeMetrics
     layer_metrics: list[LayerMetrics]
     warnings: list[ValidationIssue] = field(default_factory=list)
-    errors: list[ValidationIssue] = field(default_factory=list)
+    violations: list[ValidationIssue] = field(default_factory=list)
     failure_reasons: list[str] = field(default_factory=list)
     checks_enabled: dict[str, bool] = field(default_factory=dict)
 
@@ -227,7 +226,7 @@ class ValidationResult:
     def summary_dict(self) -> dict[str, Any]:
         completions = {str(item.robot_id): item.completion_s for item in self.schedule.robots}
         return {
-            "schema_version": "2.0",
+            "schema_version": RESULT_SCHEMA_VERSION,
             "validator_version": __version__,
             "status": self.status,
             "input": {
@@ -265,9 +264,7 @@ class ValidationResult:
                     "enabled": self.checks_enabled.get("arm_envelope", False),
                     "passed": self.collision.arm_envelope_event_count == 0,
                     "event_count": self.collision.arm_envelope_event_count,
-                    "minimum_safety_margin_mm": (
-                        self.collision.minimum_arm_safety_margin_mm
-                    ),
+                    "minimum_safety_margin_mm": (self.collision.minimum_arm_safety_margin_mm),
                     "centerline_distance_at_worst_mm": (
                         self.collision.arm_centerline_distance_at_worst_mm
                     ),
@@ -303,6 +300,9 @@ class ValidationResult:
                 "passed": self.shape.passed,
                 "target_volume_mm3": self.shape.target_volume_mm3,
                 "deposited_volume_mm3": self.shape.deposited_volume_mm3,
+                "intersection_volume_mm3": self.shape.intersection_volume_mm3,
+                "underfill_volume_mm3": self.shape.underfill_volume_mm3,
+                "overfill_volume_mm3": self.shape.overfill_volume_mm3,
                 "coverage": self.shape.coverage,
                 "underfill_ratio": self.shape.underfill_ratio,
                 "overfill_ratio": self.shape.overfill_ratio,
@@ -314,7 +314,16 @@ class ValidationResult:
                 "target_volume_discrepancy_ratio": (self.shape.target_volume_discrepancy_ratio),
             },
             "failure_reasons": self.failure_reasons,
-            "warnings": [issue.display() for issue in self.warnings],
-            "errors": [issue.display() for issue in self.errors],
+            "issues": [
+                {
+                    "severity": issue.severity,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "robot_id": issue.robot_id,
+                    "start_s": issue.start_s,
+                    "end_s": issue.end_s,
+                }
+                for issue in [*self.violations, *self.warnings]
+            ],
             "output_directory": str(self.output_dir),
         }

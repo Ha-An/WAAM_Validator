@@ -1,1595 +1,1592 @@
-"""Dash application for browsing and running local WAAM validation jobs."""
+"""Single-job WAAM Validator local web interface."""
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
 from urllib.request import urlopen
 
+import dash_ag_grid as dag
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_update
+from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
+from dash.exceptions import PreventUpdate
 from flask import abort, send_file
-from plotly.subplots import make_subplots
 
+from .._version import __version__
+from ..config.loader import load_config
+from ..models import TrajectorySet
+from ..provenance import RESULT_SCHEMA_VERSION, verify_validation_inputs
+from ..visualization.replay import _capsule_xy
 from .data import (
+    ALLOWED_ARTIFACTS,
     DashboardDataError,
     JobRecord,
     RunRecord,
-    discover_jobs,
+    load_latest_matching_run,
     load_latest_run,
+    load_run_directory,
     load_thresholds,
-    read_csv_page,
     read_csv_records,
-    resolve_artifact,
-    resolve_job,
+    read_csv_window,
+    resolve_single_job_artifact,
 )
 from .input_inspector import (
-    inspect_dashboard_inputs,
+    inspect_dashboard_input_bundle,
     inspection_is_current,
-    resolve_dashboard_inputs,
+    resolve_input_directory,
 )
-from .replay_service import estimate_replay, preset_interval_s, read_replay_manifest
+from .preview import build_gantt_figure, build_input_preview
+from .replay_service import (
+    estimate_deposited_stl,
+    estimate_replay,
+    preset_interval_s,
+    read_deposited_stl_status,
+    read_replay_status,
+)
 from .runner import (
     ReplayAlreadyRunningError,
     ReplayRunManager,
     ValidationAlreadyRunningError,
     ValidationRunManager,
 )
+from .views import (
+    collision_timeline as _collision_timeline,
+)
+from .views import (
+    empty_figure as _empty_figure,
+)
+from .views import (
+    inspection_content as _inspection_content,
+)
+from .views import (
+    issues_content as _issues_content,
+)
+from .views import (
+    metric_card as _metric_card,
+)
+from .views import (
+    robot_time_figure as _robot_figure,
+)
+from .views import (
+    shape_figure as _shape_figure,
+)
+from .views import (
+    shape_variation_message,
+)
+from .views import (
+    style_figure as _style_figure,
+)
+from .views import (
+    threshold_content as _threshold_content,
+)
 
 JsonDict = dict[str, Any]
-DataTable: Any = dash_table.DataTable  # type: ignore[attr-defined]
-_GRAPH_CONFIG: Any = {
-    "displaylogo": False,
-    "responsive": True,
-    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+_GRAPH_CONFIG: Any = {"displaylogo": False, "responsive": True}
+_ARTIFACT_LABELS = {
+    "summary.json": "종합 판정 데이터",
+    "validation_report.md": "검증 보고서",
+    "robot_metrics.csv": "로봇 작업·Reach 수치",
+    "collision_events.csv": "충돌 이벤트 수치",
+    "layer_metrics.csv": "Layer 형상 수치",
+    "run.log": "실행 기록",
+    "deposited.stl": "명목 적층 형상 STL",
+    "replay.html": "3D Replay HTML",
+    "validation_inputs.json": "입력 파일 지문",
+    "error.json": "실행 오류 데이터",
 }
 _STAGE_LABELS = {
-    "idle": "실행 대기",
-    "starting": "프로세스 준비",
+    "starting": "프로세스 시작",
     "loading_inputs": "입력 로딩",
     "collision": "충돌 검사",
-    "shape": "형상 검사",
-    "artifacts": "산출물 생성",
-    "completed": "검증 완료",
-    "failed": "검증 오류",
+    "deposition": "적층 형상 생성",
+    "target_slicing": "Target slicing",
+    "shape_metrics": "형상 지표 계산",
+    "results": "결과 기록",
+    "completed": "완료",
+    "failed": "오류",
     "process_exit": "프로세스 종료",
 }
-_ARTIFACT_LABELS = {
-    "summary.json": "Summary JSON",
-    "validation_report.md": "검증 보고서",
-    "robot_metrics.csv": "로봇 지표 CSV",
-    "collision_events.csv": "충돌 이벤트 CSV",
-    "layer_metrics.csv": "Layer 지표 CSV",
-    "warnings.csv": "경고 CSV",
-    "deposited.stl": "적층 형상 STL",
-    "run.log": "실행 로그",
-    "overview_xy.png": "XY 경로 이미지",
-    "gantt.png": "Gantt 이미지",
-    "shape_metrics_by_layer.png": "Layer 지표 이미지",
-    "worst_layer_comparison.png": "최악 Layer 비교 이미지",
-    "arm_envelope_worst_case.png": "Arm Envelope 최악 시점 이미지",
-    "replay.html": "3D Replay",
-    "replay_manifest.json": "Replay 생성 정보",
-    "error.json": "Error JSON",
-}
 
 
-def _section(payload: JsonDict, name: str) -> JsonDict:
-    value = payload.get(name)
-    return value if isinstance(value, dict) else {}
+class _ContextRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._paths: dict[str, Path] = {}
+        self._trajectories: dict[str, TrajectorySet] = {}
+        self._tokens_by_path: dict[Path, str] = {}
+
+    def add(self, path: Path, trajectories: TrajectorySet) -> str:
+        resolved = path.resolve()
+        with self._lock:
+            token = self._tokens_by_path.get(resolved)
+            if token is None:
+                token = uuid.uuid4().hex
+                self._tokens_by_path[resolved] = token
+            self._paths[token] = resolved
+            self._trajectories[token] = trajectories
+        return token
+
+    def get(self, token: str) -> Path:
+        with self._lock:
+            path = self._paths.get(token)
+        if path is None:
+            raise DashboardDataError("알 수 없거나 만료된 입력 context입니다.")
+        return path
+
+    def trajectories(self, token: str) -> TrajectorySet:
+        with self._lock:
+            trajectories = self._trajectories.get(token)
+        if trajectories is None:
+            raise DashboardDataError("알 수 없거나 만료된 입력 context입니다.")
+        return trajectories
 
 
-def _number(payload: JsonDict, section: str, field: str) -> float | None:
-    raw = _section(payload, section).get(field)
-    return float(raw) if isinstance(raw, int | float) else None
+def _screen(class_name: str, screen_id: str, children: list[Any]) -> html.Section:
+    return html.Section(children, id=screen_id, className=class_name)
 
 
-def _nested_number(payload: JsonDict, section: str, subsection: str, field: str) -> float | None:
-    nested = _section(payload, section).get(subsection)
-    raw = nested.get(field) if isinstance(nested, dict) else None
-    return float(raw) if isinstance(raw, int | float) else None
-
-
-def _metric_card(label: str, value: str, detail: str = "") -> html.Div:
+def _layout(initial_job_dir: Path) -> html.Div:
+    empty_scene = _empty_figure("입력 확인 후 3D 작업 공간을 표시합니다.", height=680)
+    empty_chart = _empty_figure("입력 확인 후 통계를 표시합니다.")
     return html.Div(
         [
-            html.Div(label, className="metric-label"),
-            html.Div(value, className="metric-value"),
-            html.Div(detail, className="metric-detail"),
-        ],
-        className="metric-card",
-    )
-
-
-def _style_figure(figure: go.Figure, *, height: int = 330) -> go.Figure:
-    figure.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font={"color": "#dce8f5", "family": "Segoe UI, Malgun Gothic, sans-serif"},
-        legend={"orientation": "h", "y": 1.12, "x": 0},
-        margin={"l": 56, "r": 24, "t": 54, "b": 48},
-        height=height,
-        hoverlabel={"bgcolor": "#122338", "font_color": "#e8f1fb"},
-    )
-    figure.update_xaxes(gridcolor="#203249", zerolinecolor="#314861")
-    figure.update_yaxes(gridcolor="#203249", zerolinecolor="#314861")
-    return figure
-
-
-def _empty_figure(message: str, *, height: int = 330) -> go.Figure:
-    figure = go.Figure()
-    figure.add_annotation(text=message, showarrow=False, font={"color": "#8fa3b8"})
-    figure.update_xaxes(visible=False)
-    figure.update_yaxes(visible=False)
-    return _style_figure(figure, height=height)
-
-
-def _status_result(
-    job: JobRecord | None,
-) -> tuple[RunRecord | None, JsonDict, str | None]:
-    if job is None:
-        return None, {}, "검증 가능한 작업이 없습니다."
-    try:
-        run = load_latest_run(job.path)
-    except DashboardDataError as exc:
-        return None, {}, str(exc)
-    if run is None:
-        return None, {}, None
-    return run, run.payload, run.load_error
-
-
-def _artifact_url(job: JobRecord, run: RunRecord, filename: str) -> str:
-    return "/artifacts/{}/{}/{}".format(
-        quote(job.name, safe=""),
-        quote(run.run_name, safe=""),
-        quote(filename, safe=""),
-    )
-
-
-def _summary_content(run: RunRecord, payload: JsonDict) -> html.Div:
-    if run.status == "ERROR":
-        return html.Div(
-            [
-                html.P(str(payload.get("code", "VALIDATION_ERROR")), className="error-code"),
-                html.P(str(payload.get("message", "검증 실행 중 오류가 발생했습니다."))),
-            ],
-            className="verdict-copy",
-        )
-    reasons = payload.get("failure_reasons", [])
-    warnings = payload.get("warnings", [])
-    errors = payload.get("errors", [])
-    if isinstance(reasons, list) and reasons:
-        headline = "검증 기준을 충족하지 못했습니다."
-        body: Any = html.Ol([html.Li(str(item)) for item in reasons])
-        tone = "fail-copy"
-    else:
-        headline = "모든 활성 검증 기준을 충족했습니다."
-        body = html.P("Failure reason이 없습니다.", className="muted-copy")
-        tone = "success-copy"
-    warning_count = len(warnings) if isinstance(warnings, list) else 0
-    error_count = len(errors) if isinstance(errors, list) else 0
-    return html.Div(
-        [
-            html.P(headline, className=tone),
-            body,
-            html.Div(
-                [
-                    html.Span(f"경고 {warning_count}건"),
-                    html.Span(f"비치명 오류 {error_count}건"),
-                ],
-                className="inline-stats",
-            ),
-        ],
-        className="verdict-copy",
-    )
-
-
-def _threshold_content(thresholds: JsonDict) -> list[html.Div | html.P]:
-    if "error" in thresholds:
-        return [html.P(str(thresholds["error"]), className="error-code")]
-    rows = [
-        ("전체 Coverage ≥", thresholds.get("minimum_overall_coverage")),
-        ("전체 Overfill ≤", thresholds.get("maximum_overall_overfill_ratio")),
-        ("전체 IoU ≥", thresholds.get("minimum_overall_iou")),
-        ("Layer IoU ≥", thresholds.get("minimum_layer_iou")),
-        ("실패 Layer 비율 ≤", thresholds.get("maximum_failed_layer_ratio")),
-    ]
-    return [
-        html.Div(
-            [html.Span(label), html.Strong(f"{float(value):.2%}")],
-            className="threshold-row",
-        )
-        for label, value in rows
-        if isinstance(value, int | float)
-    ]
-
-
-def _robot_figure(rows: list[JsonDict]) -> go.Figure:
-    if not rows:
-        return _empty_figure("robot_metrics.csv가 없습니다")
-    robots = [f"R{int(row['robot_id'])}" for row in rows]
-    figure = go.Figure()
-    for field, name, color in (
-        ("deposition_time_s", "Deposition", "#f97316"),
-        ("travel_time_s", "Travel", "#38bdf8"),
-        ("wait_time_s", "Wait", "#637589"),
-    ):
-        figure.add_bar(
-            y=robots,
-            x=[float(row.get(field, 0.0) or 0.0) for row in rows],
-            name=name,
-            orientation="h",
-            marker_color=color,
-            hovertemplate="%{y}<br>%{x:,.2f} s<extra>" + name + "</extra>",
-        )
-    figure.update_layout(barmode="stack", xaxis_title="누적 시간 [s]", yaxis_title="Robot")
-    return _style_figure(figure)
-
-
-def _optional_number(value: object) -> str:
-    return "—" if not isinstance(value, int | float) else f"{float(value):,.2f} mm/s"
-
-
-def _robot_table(rows: list[JsonDict]) -> html.Div:
-    if not rows:
-        return html.Div("표시할 로봇 지표가 없습니다.", className="empty-state")
-    headers = [
-        "Robot",
-        "완료 [s]",
-        "Deposition 거리 [mm]",
-        "Travel 거리 [mm]",
-        "Deposition 속도",
-        "Travel 속도",
-    ]
-    body = []
-    for row in rows:
-        body.append(
-            html.Tr(
-                [
-                    html.Td(f"R{int(row['robot_id'])}"),
-                    html.Td(f"{float(row.get('completion_s', 0.0)):,.2f}"),
-                    html.Td(f"{float(row.get('deposition_length_mm', 0.0)):,.2f}"),
-                    html.Td(f"{float(row.get('travel_length_mm', 0.0)):,.2f}"),
-                    html.Td(_optional_number(row.get("mean_deposition_speed_mm_s"))),
-                    html.Td(_optional_number(row.get("mean_travel_speed_mm_s"))),
-                ]
-            )
-        )
-    return html.Div(
-        html.Table(
-            [html.Thead(html.Tr([html.Th(item) for item in headers])), html.Tbody(body)],
-            className="data-table compact-table",
-        ),
-        className="table-scroll",
-    )
-
-
-def _collision_gauge(payload: JsonDict) -> go.Figure:
-    distance = _nested_number(payload, "collision", "tcp_radius", "minimum_distance_mm")
-    required = _nested_number(
-        payload, "collision", "tcp_radius", "required_distance_at_minimum_mm"
-    )
-    if distance is None or required is None:
-        return _empty_figure("TCP 거리 지표가 없습니다", height=300)
-    maximum = max(distance, required) * 1.35 or 1.0
-    collision = payload.get("collision", {})
-    collision_data = collision if isinstance(collision, dict) else {}
-    tcp = collision_data.get("tcp_radius", {})
-    tcp_data = tcp if isinstance(tcp, dict) else {}
-    tcp_enabled = bool(tcp_data.get("enabled", False))
-    tcp_events = int(tcp_data.get("event_count", 0) or 0)
-    passed = tcp_events == 0
-    bar_color = "#21d4a3" if passed else "#ff6376"
-    if not tcp_enabled:
-        bar_color = "#8fa3b8"
-    figure = go.Figure(
-        go.Indicator(
-            mode="gauge+number+delta",
-            value=distance,
-            number={"suffix": " mm", "font": {"color": "#e8f1fb"}},
-            delta={"reference": required, "suffix": " mm"},
-            title={"text": "최소 TCP 거리", "font": {"color": "#8fa3b8"}},
-            gauge={
-                "axis": {"range": [0, maximum], "tickcolor": "#8fa3b8"},
-                "bar": {"color": bar_color},
-                "bgcolor": "#0d1927",
-                "bordercolor": "#20344b",
-                "steps": [
-                    {"range": [0, required], "color": "rgba(255,99,118,.16)"},
-                    {"range": [required, maximum], "color": "rgba(33,212,163,.08)"},
-                ],
-                "threshold": {
-                    "line": {"color": "#f5b942", "width": 4},
-                    "thickness": 0.8,
-                    "value": required,
-                },
-            },
-        )
-    )
-    return _style_figure(figure, height=300)
-
-
-def _arm_envelope_gauge(payload: JsonDict) -> go.Figure:
-    distance = _nested_number(
-        payload, "collision", "arm_envelope", "centerline_distance_at_worst_mm"
-    )
-    required = _nested_number(
-        payload, "collision", "arm_envelope", "required_distance_at_worst_mm"
-    )
-    margin = _nested_number(
-        payload, "collision", "arm_envelope", "minimum_safety_margin_mm"
-    )
-    if distance is None or required is None or margin is None:
-        return _empty_figure("Arm Envelope 지표가 없습니다", height=300)
-    arm = payload.get("collision", {}).get("arm_envelope", {})
-    arm_data = arm if isinstance(arm, dict) else {}
-    enabled = bool(arm_data.get("enabled", False))
-    passed = bool(arm_data.get("passed", False))
-    color = "#21d4a3" if passed else "#ff6376"
-    if not enabled:
-        color = "#8fa3b8"
-    maximum = max(distance, required) * 1.35 or 1.0
-    figure = go.Figure(
-        go.Indicator(
-            mode="gauge+number+delta",
-            value=distance,
-            number={"suffix": " mm", "font": {"color": "#e8f1fb"}},
-            delta={"reference": required, "suffix": " mm"},
-            title={
-                "text": f"Arm 중심선 거리 · 안전 여유 {margin:,.2f} mm",
-                "font": {"color": "#8fa3b8"},
-            },
-            gauge={
-                "axis": {"range": [0, maximum], "tickcolor": "#8fa3b8"},
-                "bar": {"color": color},
-                "bgcolor": "#0d1927",
-                "bordercolor": "#20344b",
-                "steps": [
-                    {"range": [0, required], "color": "rgba(255,99,118,.16)"},
-                    {"range": [required, maximum], "color": "rgba(33,212,163,.08)"},
-                ],
-                "threshold": {
-                    "line": {"color": "#f5b942", "width": 4},
-                    "thickness": 0.8,
-                    "value": required,
-                },
-            },
-        )
-    )
-    return _style_figure(figure, height=300)
-
-
-def _collision_timeline(rows: list[JsonDict]) -> go.Figure:
-    if not rows:
-        return _empty_figure("충돌 이벤트 없음", height=300)
-    limited = rows[:1000]
-    labels = [
-        f"{row.get('type', 'EVENT')} · R{row.get('robot_a')}-R{row.get('robot_b')}"
-        for row in limited
-    ]
-    colors = [
-        "#ff6376" if row.get("type") == "ARM_ENVELOPE" else "#f5b942"
-        for row in limited
-    ]
-    figure = go.Figure(
-        go.Bar(
-            y=labels,
-            x=[float(row.get("duration_s", 0.0) or 0.0) for row in limited],
-            base=[float(row.get("start_s", 0.0) or 0.0) for row in limited],
-            orientation="h",
-            marker_color=colors,
-            hovertemplate="%{y}<br>시작 %{base:,.3f} s<br>지속 %{x:,.3f} s<extra></extra>",
-        )
-    )
-    figure.update_layout(xaxis_title="시간 [s]", yaxis_title="Event", showlegend=False)
-    return _style_figure(figure, height=max(300, min(650, 115 + 26 * len(limited))))
-
-
-def _shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:
-    if not rows:
-        return _empty_figure("layer_metrics.csv가 없습니다", height=430)
-    x_values = [int(row.get("layer_index", 0)) for row in rows]
-    figure = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.16,
-        subplot_titles=(
-            "Coverage · IoU (높을수록 좋음)",
-            "Layer 오차율 확대 (낮을수록 좋음)",
-        ),
-    )
-    for field, name, color in (
-        ("coverage", "Coverage", "#21d4a3"),
-        ("iou", "IoU", "#5caeff"),
-    ):
-        figure.add_trace(
-            go.Scatter(
-                x=x_values,
-                y=[float(row.get(field, 0.0) or 0.0) for row in rows],
-                name=name,
-                mode="lines+markers",
-                line={"color": color, "width": 2},
-                marker={"size": 5},
-                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.4%}}<extra></extra>",
-            ),
-            row=1,
-            col=1,
-        )
-    for field, name, color in (
-        ("underfill_ratio", "Underfill", "#f5b942"),
-        ("overfill_ratio", "Overfill", "#ff6376"),
-        ("iou_loss", "IoU 손실", "#a78bfa"),
-    ):
-        values = [
-            max(0.0, 1.0 - float(row.get("iou", 0.0) or 0.0))
-            if field == "iou_loss"
-            else float(row.get(field, 0.0) or 0.0)
-            for row in rows
-        ]
-        figure.add_trace(
-            go.Scatter(
-                x=x_values,
-                y=values,
-                name=name,
-                mode="lines+markers",
-                line={"color": color, "width": 1.6},
-                marker={"size": 4},
-                hovertemplate=f"Layer %{{x}}<br>{name} %{{y:.4%}}<extra></extra>",
-            ),
-            row=2,
-            col=1,
-        )
-    iou_min = thresholds.get("minimum_layer_iou")
-    iou_values = [float(row.get("iou", 0.0) or 0.0) for row in rows]
-    match_values = iou_values + [float(row.get("coverage", 0.0) or 0.0) for row in rows]
-    if isinstance(iou_min, int | float) and min(iou_values) <= float(iou_min) + 0.05:
-        figure.add_hline(
-            y=float(iou_min),
-            line_dash="dot",
-            line_color="#5caeff",
-            annotation_text="Layer IoU 기준",
-            annotation_position="bottom right",
-            row=1,
-            col=1,
-        )
-    elif isinstance(iou_min, int | float):
-        figure.add_annotation(
-            text=f"Layer IoU 기준 ≥ {float(iou_min):.0%} · 현재 확대 범위 밖",
-            x=1.0,
-            y=1.0,
-            xref="x domain",
-            yref="y domain",
-            xanchor="right",
-            yanchor="top",
-            showarrow=False,
-            font={"color": "#8fa3b8", "size": 11},
-            row=1,
-            col=1,
-        )
-    failed_rows = [row for row in rows if not bool(row.get("passed", False))]
-    if failed_rows:
-        figure.add_trace(
-            go.Scatter(
-                x=[int(row.get("layer_index", 0)) for row in failed_rows],
-                y=[float(row.get("iou", 0.0) or 0.0) for row in failed_rows],
-                name="실패 Layer",
-                mode="markers",
-                marker={"color": "#ff6376", "size": 9, "symbol": "x"},
-                hovertemplate="실패 Layer %{x}<br>IoU %{y:.2%}<extra></extra>",
-            ),
-            row=1,
-            col=1,
-        )
-    if min(match_values) > 0.95:
-        spread = max(match_values) - min(match_values)
-        padding = max(0.0001, spread * 0.2)
-        figure.update_yaxes(
-            range=[max(0.0, min(match_values) - padding), min(1.0001, 1.0 + padding)],
-            row=1,
-            col=1,
-        )
-    error_max = max(
-        [
-            float(row.get("underfill_ratio", 0.0) or 0.0)
-            for row in rows
-        ]
-        + [float(row.get("overfill_ratio", 0.0) or 0.0) for row in rows]
-        + [max(0.0, 1.0 - value) for value in iou_values]
-    )
-    figure.update_yaxes(title_text="일치율", tickformat=".3%", row=1, col=1)
-    figure.update_yaxes(
-        title_text="오차율 (확대)",
-        tickformat=".3%",
-        range=[0.0, max(0.0001, error_max * 1.15)],
-        row=2,
-        col=1,
-    )
-    figure.update_xaxes(title_text="Layer 번호", row=2, col=1)
-    return _style_figure(figure, height=460)
-
-
-def _issues_content(rows: list[JsonDict], payload: JsonDict) -> html.Div:
-    if not rows:
-        warnings = payload.get("warnings", [])
-        errors = payload.get("errors", [])
-        warning_items = warnings if isinstance(warnings, list) else []
-        error_items = errors if isinstance(errors, list) else []
-        if warning_items or error_items:
-            return html.Div(
-                [
-                    *[
-                        html.Div(str(item), className="issue-item issue-warning")
-                        for item in warning_items
-                    ],
-                    *[
-                        html.Div(str(item), className="issue-item issue-error")
-                        for item in error_items
-                    ],
-                ],
-                className="issue-list",
-            )
-        return html.Div("추가 판정 기록이 없습니다.", className="empty-state success-border")
-    return html.Div(
-        [
-            html.Div(
-                [
-                    html.Span(str(row.get("severity", "warning")).upper(), className="issue-level"),
-                    html.Strong(str(row.get("code", "UNKNOWN"))),
-                    html.P(str(row.get("message", ""))),
-                ],
-                className=f"issue-item issue-{row.get('severity', 'warning')}",
-            )
-            for row in rows
-        ],
-        className="issue-list",
-    )
-
-
-def _file_size(path: Path) -> str:
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return "크기 확인 불가"
-    if size >= 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
-
-
-def _duration_range(low_s: float, high_s: float) -> str:
-    def one(value: float) -> str:
-        if value >= 60:
-            return f"{value / 60:.1f}분"
-        return f"{value:.0f}초"
-
-    return f"{one(low_s)} ~ {one(high_s)}"
-
-
-def _size_range(low_bytes: int, high_bytes: int) -> str:
-    return f"{_file_size_value(low_bytes)} ~ {_file_size_value(high_bytes)}"
-
-
-def _file_size_value(size: int) -> str:
-    if size >= 1024 * 1024:
-        return f"{size / (1024 * 1024):.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
-
-
-def _artifact_content(job: JobRecord, run: RunRecord) -> list[html.A]:
-    links = []
-    for filename, label in _ARTIFACT_LABELS.items():
-        path = run.directory / filename
-        if path.is_file():
-            links.append(
-                html.A(
-                    [html.Span(label), html.Small(_file_size(path))],
-                    href=_artifact_url(job, run, filename),
-                    target="_blank",
-                    rel="noopener noreferrer",
-                    className="artifact-link",
-                )
-            )
-    return links
-
-
-def _gallery_content(job: JobRecord, run: RunRecord) -> list[html.Figure]:
-    gallery = []
-    for filename in (
-        "overview_xy.png",
-        "gantt.png",
-        "shape_metrics_by_layer.png",
-        "worst_layer_comparison.png",
-        "arm_envelope_worst_case.png",
-    ):
-        if (run.directory / filename).is_file():
-            gallery.append(
-                html.Figure(
-                    [
-                        html.Img(
-                            src=_artifact_url(job, run, filename), alt=_ARTIFACT_LABELS[filename]
-                        ),
-                        html.Figcaption(_ARTIFACT_LABELS[filename]),
-                    ]
-                )
-            )
-    return gallery
-
-
-def _display_path(value: str) -> str:
-    text = value.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
-        return text[1:-1].strip()
-    return text
-
-
-def _detail_rows(items: list[tuple[str, object]]) -> html.Dl:
-    children: list[Any] = []
-    for label, value in items:
-        children.extend([html.Dt(label), html.Dd("—" if value is None else str(value))])
-    return html.Dl(children, className="input-detail-list")
-
-
-def _vector(value: object) -> str:
-    if not isinstance(value, list | tuple):
-        return "—"
-    return "[" + ", ".join(f"{float(item):,.3f}" for item in value) + "]"
-
-
-def _duration_units(seconds: float) -> str:
-    return f"{seconds:,.2f}초 · {seconds / 60.0:,.2f}분 · {seconds / 3600.0:,.2f}시간"
-
-
-def _inspection_issues(payload: JsonDict) -> Any:
-    groups = (
-        ("차단 오류", payload.get("blocking_errors", []), "error"),
-        ("예상 FAIL", payload.get("expected_failures", []), "expected-fail"),
-        ("경고", payload.get("warnings", []), "warning"),
-    )
-    sections: list[Any] = []
-    for label, raw_issues, tone in groups:
-        issues = raw_issues if isinstance(raw_issues, list) else []
-        if not issues:
-            continue
-        rows = []
-        for issue in issues:
-            item = issue if isinstance(issue, dict) else {}
-            rows.append(
-                html.Li(
-                    [
-                        html.Code(str(item.get("code", "UNKNOWN"))),
-                        html.Span(str(item.get("message", ""))),
-                    ]
-                )
-            )
-        sections.append(
-            html.Div(
-                [html.H4(f"{label} · {len(rows)}"), html.Ul(rows)],
-                className=f"input-issues {tone}",
-            )
-        )
-    return sections or html.Div("오류나 경고가 없습니다.", className="empty-state")
-
-
-def _config_inspection(config: JsonDict) -> Any:
-    simulation = _section(config, "simulation")
-    process = _section(config, "process")
-    workspace = _section(config, "workspace")
-    collision = _section(config, "collision")
-    validation = _section(config, "validation")
-    shape = _section(config, "shape_validation")
-    output = _section(config, "output")
-    rows: list[tuple[str, object]] = [
-        (
-            "충돌 샘플 최대 시간 간격",
-            f"{simulation.get('max_time_step_s', '—')} s",
-        ),
-        (
-            "충돌 샘플당 최대 TCP 이동거리",
-            f"{simulation.get('max_tcp_step_mm', '—')} mm",
-        ),
-        (
-            "충돌 이벤트 병합 최대 간격",
-            f"{simulation.get('event_merge_gap_s', '—')} s",
-        ),
-        ("스트리밍 처리 묶음 크기", simulation.get("batch_size", "—")),
-        (
-            "Deposition(적층) / Travel(비적층 이동) 기준 속도",
-            f"{process.get('deposition_speed_mm_s', '—')} / "
-            f"{process.get('travel_speed_mm_s', '—')} mm/s",
-        ),
-        (
-            "레이어 높이 / 명목 비드 폭",
-            f"{process.get('layer_height_mm', '—')} / {process.get('bead_width_mm', '—')} mm",
-        ),
-        (
-            "빌드 평면 높이 / TCP Z 해석 기준",
-            f"{process.get('build_plane_z_mm', '—')} mm / {process.get('tcp_z_reference', '—')}",
-        ),
-        ("비적층 이동 안전 높이", f"{process.get('safe_travel_z_mm', '—')} mm"),
-        (
-            "아크 시작 / 종료 대기시간",
-            f"{process.get('arc_on_time_s', '—')} / {process.get('arc_off_time_s', '—')} s",
-        ),
-        (
-            "2D Arm Capsule / TCP 안전 반경 검사",
-            f"{collision.get('check_arm_envelope', '—')} / "
-            f"{collision.get('check_tcp_radius', '—')}",
-        ),
-        (
-            "Arm Capsule 공통 표면 안전거리",
-            f"{collision.get('arm_clearance_mm', '—')} mm",
-        ),
-        ("경계 접촉을 충돌로 판정", collision.get("touching_is_collision", "—")),
-        (
-            "충돌 기하 계산 허용 오차",
-            f"{collision.get('geometry_epsilon_mm', '—')} mm",
-        ),
-        (
-            "원형 적층 작업영역",
-            (
-                f"{workspace.get('shape')} · center "
-                f"{_vector(workspace.get('center_xy_mm'))} · "
-                f"R {workspace.get('radius_mm')} mm"
-                if workspace
-                else "설정 없음"
-            ),
-        ),
-        (
-            "속도 위반을 FAIL로 처리 / 상대 허용 오차",
-            f"{validation.get('fail_on_speed_violation', '—')} / "
-            f"{validation.get('speed_relative_tolerance', '—')}",
-        ),
-        (
-            "Wait(위치 유지 대기) 허용 이동량",
-            f"{validation.get('wait_position_tolerance_mm', '—')} mm",
-        ),
-        (
-            "Deposition(적층) 레이어 Z 허용 오차",
-            f"{validation.get('layer_z_tolerance_mm', '—')} mm",
-        ),
-        (
-            "Target 밀폐 필수 / 제한적 복구 시도",
-            f"{validation.get('require_watertight_target', '—')} / "
-            f"{validation.get('attempt_target_repair', '—')}",
-        ),
-        (
-            "Target 체적 차이 경고 기준",
-            validation.get("target_volume_discrepancy_warning_ratio", "—"),
-        ),
-        (
-            "Coverage / IoU / Overfill",
-            f"≥ {shape.get('minimum_overall_coverage', '—')} / "
-            f"≥ {shape.get('minimum_overall_iou', '—')} / "
-            f"≤ {shape.get('maximum_overall_overfill_ratio', '—')}",
-        ),
-        (
-            "Layer IoU / 실패 Layer 비율",
-            f"≥ {shape.get('minimum_layer_iou', '—')} / "
-            f"≤ {shape.get('maximum_failed_layer_ratio', '—')}",
-        ),
-        (
-            "폴리곤 곡선 근사 해상도 / 좌표 정밀도",
-            f"{shape.get('polygon_buffer_resolution', '—')} / "
-            f"{shape.get('polygon_snap_tolerance_mm', '—')} mm",
-        ),
-        ("미소 면적 판정 기준", f"{shape.get('area_epsilon_mm2', '—')} mm²"),
-        (
-            "핵심 결과 저장",
-            "Summary JSON {} · 보고서 {} · 적층 STL {}".format(
-                output.get("save_summary_json", "—"),
-                output.get("save_report_markdown", "—"),
-                output.get("save_deposited_stl", "—"),
-            ),
-        ),
-        (
-            "지표 CSV 저장",
-            "로봇 {} · 충돌 이벤트 {} · 레이어 {}".format(
-                output.get("save_robot_metrics_csv", "—"),
-                output.get("save_collision_events_csv", "—"),
-                output.get("save_layer_metrics_csv", "—"),
-            ),
-        ),
-        ("정적 그래프 저장", output.get("save_static_plots", "—")),
-        (
-            "직접 Replay 생성 시 기본 프레임 간격",
-            f"{output.get('animation_sample_interval_s', '—')} s",
-        ),
-    ]
-    robots = config.get("robots", [])
-    for robot in robots if isinstance(robots, list) else []:
-        if isinstance(robot, dict):
-            rows.append(
-                (
-                    f"Robot {robot.get('id')} Base 위치",
-                    _vector(robot.get("base_xyz_mm")),
-                )
-            )
-            rows.append(
-                (
-                    f"Robot {robot.get('id')} Home TCP 위치",
-                    _vector(robot.get("home_xyz_mm")) if robot.get("home_xyz_mm") else "미설정",
-                )
-            )
-            rows.append(
-                (
-                    f"Robot {robot.get('id')} TCP / Arm Capsule / Reach 반경",
-                    f"{robot.get('tcp_radius_mm', '—')} / "
-                    f"{robot.get('arm_envelope_radius_mm', '—')} / "
-                    f"{robot.get('reach_radius_mm', '—')} mm",
-                )
-            )
-            arm_radius = robot.get("arm_envelope_radius_mm")
-            if isinstance(arm_radius, int | float):
-                rows.append(
-                    (
-                        f"Robot {robot.get('id')} Arm Capsule 전체 폭",
-                        f"{2.0 * float(arm_radius):,.1f} mm",
-                    )
-                )
-    robot_rows = [robot for robot in robots if isinstance(robot, dict)]
-    clearance = collision.get("arm_clearance_mm")
-    if isinstance(clearance, int | float):
-        for left_index, left in enumerate(robot_rows):
-            for right in robot_rows[left_index + 1 :]:
-                left_radius = left.get("arm_envelope_radius_mm")
-                right_radius = right.get("arm_envelope_radius_mm")
-                if isinstance(left_radius, int | float) and isinstance(
-                    right_radius, int | float
-                ):
-                    rows.append(
-                        (
-                            f"R{left.get('id')}–R{right.get('id')} 요구 중심선 간격",
-                            f"{float(left_radius) + float(right_radius) + float(clearance):,.1f} "
-                            "mm",
-                        )
-                    )
-    return _detail_rows(rows)
-
-
-def _trajectory_inspection(trajectory: JsonDict) -> Any:
-    makespan_s = float(trajectory.get("makespan_s", 0.0))
-    table_rows = []
-    robots = trajectory.get("robots", [])
-    for robot in robots if isinstance(robots, list) else []:
-        if not isinstance(robot, dict):
-            continue
-        modes = robot.get("mode_interval_counts", {})
-        mode_text = (
-            f"D {modes.get('D', 0)} / T {modes.get('T', 0)} / W {modes.get('W', 0)}"
-            if isinstance(modes, dict)
-            else "—"
-        )
-        table_rows.append(
-            html.Tr(
-                [
-                    html.Td(f"R{robot.get('robot_id')}"),
-                    html.Td(f"{int(robot.get('row_count', 0)):,}"),
-                    html.Td(f"{float(robot.get('end_s', 0.0)):,.2f}"),
-                    html.Td(mode_text),
-                    html.Td(_vector(robot.get("xyz_min_mm"))),
-                    html.Td(_vector(robot.get("xyz_max_mm"))),
-                    html.Td(
-                        f"{float(robot.get('deposition_time_s', 0.0)):,.2f} / "
-                        f"{float(robot.get('travel_time_s', 0.0)):,.2f} / "
-                        f"{float(robot.get('wait_time_s', 0.0)):,.2f}"
-                    ),
-                    html.Td(f"{float(robot.get('deposition_length_mm', 0.0)):,.2f}"),
-                    html.Td(f"{float(robot.get('travel_length_mm', 0.0)):,.2f}"),
-                    html.Td(
-                        f"{float(robot.get('mean_deposition_speed_mm_s') or 0.0):,.2f} / "
-                        f"{float(robot.get('mean_travel_speed_mm_s') or 0.0):,.2f}"
-                    ),
-                ]
-            )
-        )
-    return html.Section(
-        [
-            html.H3("Trajectory"),
-            _detail_rows(
-                [
-                    ("전체 행", f"{int(trajectory.get('row_count', 0)):,}"),
-                    ("Makespan", _duration_units(makespan_s)),
-                    (
-                        "Workload imbalance",
-                        f"{float(trajectory.get('workload_imbalance_s', 0.0)):,.2f} s",
-                    ),
-                ]
-            ),
-            html.Div(
-                html.Table(
-                    [
-                        html.Thead(
-                            html.Tr(
-                                [
-                                    html.Th("Robot"),
-                                    html.Th("행"),
-                                    html.Th("완료 [s]"),
-                                    html.Th("구간 수"),
-                                    html.Th("XYZ 최소"),
-                                    html.Th("XYZ 최대"),
-                                    html.Th("D/T/W 시간 [s]"),
-                                    html.Th("D 거리 [mm]"),
-                                    html.Th("T 거리 [mm]"),
-                                    html.Th("평균 D/T 속도"),
-                                ]
-                            )
-                        ),
-                        html.Tbody(table_rows),
-                    ],
-                    className="input-trajectory-table",
-                ),
-                className="input-table-wrap",
-            ),
-        ],
-        className="input-panel input-panel-wide",
-    )
-
-
-def _inspection_content(payload: JsonDict) -> Any:
-    status = str(payload.get("status", "BLOCKED"))
-    status_copy = {
-        "READY": ("실행 준비 완료", "입력 구조와 좌표계 검사가 완료되었습니다."),
-        "WARNING": ("실행 가능 · 경고", "경고를 검토한 뒤 Validation을 실행할 수 있습니다."),
-        "EXPECTED_FAIL": (
-            "실행 가능 · FAIL 예상",
-            "공정 규칙 위반이 있어 Validation 결과가 FAIL일 가능성이 있습니다.",
-        ),
-        "BLOCKED": ("실행 불가", "차단 오류를 수정하고 입력 확인을 다시 실행하세요."),
-    }
-    title, description = status_copy.get(status, status_copy["BLOCKED"])
-    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
-    file_cards = []
-    for filename in ("config.yaml", "trajectory.csv", "target.stl"):
-        details = files.get(filename, {}) if isinstance(files, dict) else {}
-        size = details.get("size_bytes") if isinstance(details, dict) else None
-        file_cards.append(
-            html.Div(
-                [
-                    html.Strong(filename),
-                    html.Span(
-                        _file_size_value(int(size)) if isinstance(size, int | float) else "—"
-                    ),
-                    html.Small(f"{details.get('status', '—')} · {details.get('modified_at', '—')}"),
-                    html.Code(str(details.get("path", "—"))),
-                ],
-                className="input-file-card",
-            )
-        )
-    config_value = payload.get("config")
-    config: JsonDict = config_value if isinstance(config_value, dict) else {}
-    trajectory_value = payload.get("trajectory")
-    trajectory: JsonDict = trajectory_value if isinstance(trajectory_value, dict) else {}
-    target_value = payload.get("target")
-    target: JsonDict = target_value if isinstance(target_value, dict) else {}
-    volume = target.get("volume_mm3")
-    return html.Div(
-        [
-            html.Div(
-                [
-                    html.Div([html.Strong(title), html.P(description)]),
-                    html.Span(status, className=f"input-status-pill status-{status.lower()}"),
-                ],
-                className=f"input-verdict is-{status.lower()}",
-            ),
-            html.Div(file_cards, className="input-file-grid"),
-            html.Div(
-                [
-                    html.Section(
-                        [html.H3("Config"), _config_inspection(config)],
-                        className="input-panel",
-                    ),
-                    html.Section(
-                        [
-                            html.H3("Target STL"),
-                            _detail_rows(
-                                [
-                                    (
-                                        "정점 / 면 / Body",
-                                        f"{target.get('vertex_count', '—')} / "
-                                        f"{target.get('face_count', '—')} / "
-                                        f"{target.get('body_count', '—')}",
-                                    ),
-                                    ("최소 XYZ [mm]", _vector(target.get("bounds_min_mm"))),
-                                    ("최대 XYZ [mm]", _vector(target.get("bounds_max_mm"))),
-                                    ("치수 [mm]", _vector(target.get("dimensions_mm"))),
-                                    (
-                                        "체적 [mm³]",
-                                        f"{float(volume):,.3f}"
-                                        if isinstance(volume, int | float)
-                                        else "—",
-                                    ),
-                                    ("Watertight", target.get("watertight")),
-                                ]
-                            ),
-                        ],
-                        className="input-panel",
-                    ),
-                ],
-                className="input-detail-grid",
-            ),
-            _trajectory_inspection(trajectory),
-            html.Section(
-                [html.H3("종합 검사"), _inspection_issues(payload)],
-                className="input-panel input-panel-wide",
-            ),
-            html.P(
-                f"검사 완료: {payload.get('checked_at', '—')}",
-                className="input-checked-at",
-            ),
-        ],
-        className="input-inspection-result",
-    )
-
-
-def _input_error_content(message: str) -> Any:
-    return html.Div(
-        [html.Strong("입력 확인 실패"), html.P(message)],
-        className="input-verdict is-blocked",
-    )
-
-
-def _table_style() -> dict[str, Any]:
-    return {
-        "page_action": "custom",
-        "sort_action": "custom",
-        "sort_mode": "single",
-        "page_current": 0,
-        "page_size": 12,
-        "page_count": 1,
-        "style_as_list_view": True,
-        "style_table": {"overflowX": "auto"},
-        "style_header": {
-            "backgroundColor": "#122338",
-            "color": "#8fa3b8",
-            "border": "0",
-            "fontWeight": "700",
-        },
-        "style_cell": {
-            "backgroundColor": "#0d1927",
-            "color": "#dce8f5",
-            "border": "0",
-            "borderBottom": "1px solid #20344b",
-            "padding": "10px",
-            "fontFamily": "Segoe UI, Malgun Gothic, sans-serif",
-            "fontSize": "14px",
-            "textAlign": "left",
-        },
-    }
-
-
-def _build_layout(jobs_root: Path, jobs: list[JobRecord]) -> html.Div:
-    options = [{"label": job.name, "value": job.name} for job in jobs]
-    selected = jobs[0].name if jobs else None
-    collision_columns = [
-        {"name": "ID", "id": "event_id", "type": "numeric"},
-        {"name": "유형", "id": "type"},
-        {"name": "Robot A", "id": "robot_a", "type": "numeric"},
-        {"name": "Robot B", "id": "robot_b", "type": "numeric"},
-        {"name": "시작 [s]", "id": "start_s", "type": "numeric"},
-        {"name": "종료 [s]", "id": "end_s", "type": "numeric"},
-        {"name": "지속 [s]", "id": "duration_s", "type": "numeric"},
-        {"name": "최소 거리 [mm]", "id": "minimum_distance_mm", "type": "numeric"},
-        {"name": "요구 거리 [mm]", "id": "required_distance_mm", "type": "numeric"},
-        {"name": "최소 여유 [mm]", "id": "minimum_safety_margin_mm", "type": "numeric"},
-    ]
-    layer_columns = [
-        {"name": "Layer", "id": "layer_index", "type": "numeric"},
-        {"name": "Z [mm]", "id": "z_slice_mm", "type": "numeric"},
-        {"name": "Coverage", "id": "coverage", "type": "numeric"},
-        {"name": "Underfill", "id": "underfill_ratio", "type": "numeric"},
-        {"name": "Overfill", "id": "overfill_ratio", "type": "numeric"},
-        {"name": "IoU", "id": "iou", "type": "numeric"},
-        {"name": "판정", "id": "passed"},
-    ]
-    return html.Div(
-        [
+            dcc.Store(id="view-store", data={"view": "input"}),
+            dcc.Store(id="active-input-store", data={}),
+            dcc.Store(id="selected-job-dir-store", data=str(initial_job_dir.resolve())),
+            dcc.Store(id="current-run-store", data={}),
+            dcc.Store(id="recent-run-store", data={}),
             dcc.Store(id="runtime-store", data={"state": "IDLE", "running": False}),
             dcc.Store(id="replay-runtime-store", data={"state": "IDLE", "running": False}),
-            dcc.Store(id="result-refresh", data={}),
             dcc.Store(id="replay-refresh", data={}),
-            dcc.Store(id="input-inspection-store", data={}),
-            dcc.Store(id="jobs-root-store", data={"path": str(jobs_root)}),
-            dcc.Store(id="job-use-request", data={}),
-            dcc.Interval(
-                id="validation-poller",
-                interval=2000,
-                n_intervals=0,
-                disabled=True,
-            ),
-            dcc.Interval(
-                id="replay-poller",
-                interval=2000,
-                n_intervals=0,
-                disabled=True,
-            ),
+            dcc.Store(id="result-tab-store", data={}),
+            dcc.Interval(id="validation-poller", interval=1000, disabled=True),
+            dcc.Interval(id="replay-poller", interval=1000, disabled=True),
             html.Header(
                 [
+                    html.Div("WV", className="brand-mark"),
                     html.Div(
                         [
-                            html.Div("WV", className="brand-mark"),
-                            html.Div(
-                                [html.H1("WAAM Validator"), html.P("검증 관제 대시보드")],
-                                className="brand-copy",
-                            ),
+                            html.H1("WAAM Validator"),
+                            html.P(f"v{__version__} · 단일 WAAM 작업 검증"),
                         ],
-                        className="brand",
+                        className="brand-copy",
                     ),
                     html.Div(
                         [
-                            html.Label("작업", htmlFor="job-select"),
-                            dcc.Dropdown(
-                                id="job-select",
-                                options=options,
-                                value=selected,
-                                clearable=False,
-                                searchable=False,
-                                placeholder="검증 작업이 없습니다",
+                            html.Span("1 입력 준비"),
+                            html.Span("2 Validation"),
+                            html.Span("3 결과"),
+                        ],
+                        id="workflow-steps",
+                        className="workflow-steps step-input",
+                    ),
+                ],
+                className="validator-header",
+            ),
+            html.Main(
+                [
+                    _screen(
+                        "validator-screen",
+                        "input-screen",
+                        [
+                            html.Div(
+                                [
+                                    html.P("입력 준비", className="eyebrow"),
+                                    html.H2("검증할 입력 폴더를 확인하세요"),
+                                    html.P(
+                                        "세 개의 고정 입력 파일을 원본 위치에서 직접 읽습니다.",
+                                        className="muted-copy",
+                                    ),
+                                ],
+                                className="screen-heading",
+                            ),
+                            html.Section(
+                                [
+                                    html.Label("입력 폴더", htmlFor="job-dir-input"),
+                                    html.Div(
+                                        [
+                                            dcc.Input(
+                                                id="job-dir-input",
+                                                value=str(initial_job_dir.resolve()),
+                                                type="text",
+                                                # Keep the callback state synchronized when a
+                                                # pasted path is followed immediately by a click.
+                                                debounce=False,
+                                            ),
+                                            html.Button(
+                                                "찾아보기",
+                                                id="browse-button",
+                                                className="secondary-button",
+                                            ),
+                                            html.Button("입력 확인", id="inspect-button"),
+                                        ],
+                                        className="folder-row",
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Code("config.yaml"),
+                                            html.Code("trajectory.csv"),
+                                            html.Code("target.stl"),
+                                        ],
+                                        className="required-files",
+                                    ),
+                                    html.P(id="folder-message", className="field-message"),
+                                ],
+                                className="folder-card",
+                            ),
+                            dcc.Loading(
+                                html.Div(
+                                    "입력 확인을 실행하면 상세 정보와 preview가 나타납니다.",
+                                    id="inspection-content",
+                                    className="input-inspection-empty",
+                                ),
+                                type="circle",
+                            ),
+                            html.Section(
+                                [
+                                    html.Div(
+                                        [
+                                            html.H3("로봇 작업 일정 (Gantt)"),
+                                            html.P(
+                                                "각 Robot을 하나의 가로 막대로 표시합니다. "
+                                                "Deposition은 적층, Travel은 비적층 이동, "
+                                                "Wait는 위치 유지 대기, 완료 후 비활성은 "
+                                                "해당 Robot의 trajectory 종료 이후를 뜻합니다. "
+                                                "짧은 상태도 보이도록 처음에는 자동 확대하며, "
+                                                "하단 범위 조절기 또는 전체 보기 버튼으로 시간축을 "
+                                                "이동할 수 있습니다. 마우스를 올리면 상태의 "
+                                                "시작·종료·지속시간을 볼 수 있습니다.",
+                                                className="muted-copy",
+                                            ),
+                                        ],
+                                        className="panel-heading",
+                                    ),
+                                    dcc.Graph(
+                                        id="input-gantt",
+                                        figure=empty_chart,
+                                        config=_GRAPH_CONFIG,
+                                    ),
+                                ],
+                                className="panel input-gantt-panel",
+                            ),
+                            html.Section(
+                                [
+                                    html.Div(
+                                        [
+                                            html.H3("입력 형상 및 로봇 작업 공간"),
+                                            html.P(id="preview-note", className="muted-copy"),
+                                        ],
+                                        className="panel-heading",
+                                    ),
+                                    dcc.Graph(
+                                        id="input-scene", figure=empty_scene, config=_GRAPH_CONFIG
+                                    ),
+                                ],
+                                className="panel preview-panel",
+                            ),
+                            html.Div(
+                                [
+                                    html.Section(
+                                        [
+                                            html.H3("로봇별 상태 시간 비율"),
+                                            html.P(
+                                                "각 로봇의 Deposition / Travel / Wait 시간이 "
+                                                "전체 Makespan에서 차지하는 비율입니다. 먼저 "
+                                                "끝난 로봇의 잔여 시간은 Wait가 아니라 완료 후 "
+                                                "비활성으로 구분합니다.",
+                                                className="muted-copy",
+                                            ),
+                                            dcc.Graph(
+                                                id="input-time-chart",
+                                                figure=empty_chart,
+                                                config=_GRAPH_CONFIG,
+                                            ),
+                                        ],
+                                        className="panel",
+                                    ),
+                                    html.Section(
+                                        [
+                                            html.H3("로봇별 경로 길이"),
+                                            html.P(
+                                                "거리 = 구간 시간 × 실제 평균 속도입니다. Travel이 "
+                                                "더 빠르면 시간 비율이 작아도 누적 거리는 더 클 수 "
+                                                "있습니다.",
+                                                className="muted-copy",
+                                            ),
+                                            dcc.Graph(
+                                                id="input-motion-chart",
+                                                figure=empty_chart,
+                                                config=_GRAPH_CONFIG,
+                                            ),
+                                        ],
+                                        className="panel",
+                                    ),
+                                    html.Section(
+                                        [
+                                            html.H3("로봇별 Reach 사용률"),
+                                            html.P(
+                                                "Robot Base에서 trajectory의 가장 먼 TCP까지의 "
+                                                "거리 ÷ 설정 Reach입니다. 100%를 초과하면 "
+                                                "Reach 판정이 FAIL입니다.",
+                                                className="muted-copy",
+                                            ),
+                                            dcc.Graph(
+                                                id="input-reach-chart",
+                                                figure=empty_chart,
+                                                config=_GRAPH_CONFIG,
+                                            ),
+                                        ],
+                                        className="panel",
+                                    ),
+                                ],
+                                className="input-chart-grid",
                             ),
                             html.Div(
                                 [
                                     html.Button(
                                         "Validation 실행",
-                                        id="run-button",
-                                        disabled=not jobs,
+                                        id="validation-button",
+                                        type="button",
+                                        disabled=True,
                                     ),
-                                    html.Small(id="run-button-hint"),
+                                    html.Button(
+                                        "최근 결과 보기",
+                                        id="recent-result-button",
+                                        disabled=True,
+                                        className="secondary-button",
+                                    ),
+                                    html.Span(
+                                        id="recent-result-readiness",
+                                        className="field-message",
+                                    ),
+                                    html.Span(id="validation-readiness", className="field-message"),
+                                    html.Span(
+                                        id="validation-start-message",
+                                        className="field-message validation-start-message",
+                                    ),
                                 ],
-                                className="run-control",
+                                className="input-footer-actions",
                             ),
                         ],
-                        className="command-bar",
                     ),
-                ],
-                className="topbar",
-            ),
-            html.Main(
-                [
-                    html.Div(id="run-banner", className="run-banner is-idle"),
-                    html.Pre(id="live-log", className="live-log is-hidden"),
-                    html.Section(
+                    _screen(
+                        "validator-screen is-hidden",
+                        "progress-screen",
                         [
-                            html.Label("JOBS_ROOT", htmlFor="jobs-root-input"),
-                            dcc.Input(
-                                id="jobs-root-input",
-                                type="text",
-                                debounce=True,
-                                value=str(jobs_root),
+                            html.Div(
+                                [
+                                    html.P("검증 진행", className="eyebrow"),
+                                    html.H2(
+                                        id="progress-title",
+                                        children="Validation을 시작하고 있습니다",
+                                    ),
+                                    html.P(id="progress-output", className="muted-copy"),
+                                ],
+                                className="screen-heading",
                             ),
-                            html.Button("적용", id="jobs-root-apply"),
-                            html.Span(
-                                "대시보드가 탐색할 작업 루트를 설정합니다.",
-                                id="jobs-root-message",
-                            ),
-                        ],
-                        className="jobs-root-settings",
-                    ),
-                    html.Details(
-                        [
-                            html.Summary("＋ 새 입력 불러오기"),
                             html.Section(
                                 [
                                     html.Div(
                                         [
-                                            html.Label("작업 폴더", htmlFor="input-job-dir"),
-                                            dcc.Input(
-                                                id="input-job-dir",
-                                                type="text",
-                                                debounce=True,
-                                                placeholder=str(jobs_root / "new_model"),
-                                            ),
-                                            html.Small(
-                                                "JOBS_ROOT 자체 또는 바로 아래 폴더만 허용됩니다."
+                                            html.Strong(id="overall-progress-label", children="0%"),
+                                            html.Span(
+                                                id="progress-stage", children="프로세스 시작"
                                             ),
                                         ],
-                                        className="input-path-field input-path-field-wide",
+                                        className="progress-heading",
                                     ),
+                                    html.Progress(id="overall-progress", value="0", max="100"),
                                     html.Div(
                                         [
                                             html.Div(
                                                 [
-                                                    html.Label(
-                                                        "Config", htmlFor="input-config-path"
+                                                    html.Span("단계 진행률"),
+                                                    html.Strong(
+                                                        id="stage-progress-label", children="0%"
                                                     ),
-                                                    dcc.Input(
-                                                        id="input-config-path",
-                                                        type="text",
-                                                        debounce=True,
-                                                        placeholder="config.yaml 경로",
-                                                    ),
-                                                ],
-                                                className="input-path-field",
+                                                ]
                                             ),
                                             html.Div(
                                                 [
-                                                    html.Label(
-                                                        "Trajectory",
-                                                        htmlFor="input-trajectory-path",
-                                                    ),
-                                                    dcc.Input(
-                                                        id="input-trajectory-path",
-                                                        type="text",
-                                                        debounce=True,
-                                                        placeholder="trajectory.csv 경로",
-                                                    ),
-                                                ],
-                                                className="input-path-field",
+                                                    html.Span("처리량"),
+                                                    html.Strong(id="progress-units", children="—"),
+                                                ]
                                             ),
                                             html.Div(
                                                 [
-                                                    html.Label(
-                                                        "Target STL", htmlFor="input-target-path"
+                                                    html.Span("경과 시간"),
+                                                    html.Strong(
+                                                        id="progress-elapsed", children="0.0 s"
                                                     ),
-                                                    dcc.Input(
-                                                        id="input-target-path",
-                                                        type="text",
-                                                        debounce=True,
-                                                        placeholder="target.stl 경로",
+                                                ]
+                                            ),
+                                            html.Div(
+                                                [
+                                                    html.Span("예상 잔여"),
+                                                    html.Strong(
+                                                        id="progress-eta", children="계산 중"
                                                     ),
-                                                ],
-                                                className="input-path-field",
+                                                ]
                                             ),
                                         ],
-                                        className="input-path-grid",
+                                        className="progress-metrics",
                                     ),
-                                    html.Div(
-                                        [
-                                            html.Button("입력 확인", id="input-check-button"),
-                                            html.Span(id="input-readiness-message"),
-                                        ],
-                                        className="input-actions",
-                                    ),
-                                    dcc.Loading(
-                                        html.Div(
-                                            "경로를 설정하고 입력 확인을 누르세요.",
-                                            id="input-inspection-content",
-                                            className="input-inspection-empty",
-                                        ),
-                                        type="circle",
-                                    ),
+                                    html.P(id="progress-message", className="progress-message"),
                                 ],
-                                className="input-preparation-body",
+                                className="progress-card",
                             ),
+                            html.Pre(id="progress-log", className="live-log"),
                         ],
-                        id="input-preparation",
-                        className="input-preparation",
                     ),
-                    html.Section(
+                    _screen(
+                        "validator-screen is-hidden",
+                        "result-screen",
                         [
                             html.Div(
                                 [
-                                    html.P("LATEST VALIDATION", className="eyebrow"),
-                                    html.H2(id="result-title"),
-                                    html.P(id="result-meta", className="result-meta"),
-                                ]
+                                    html.Div(
+                                        [
+                                            html.P("검증 결과", className="eyebrow"),
+                                            html.H2("검증 결과"),
+                                        ]
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Button(
+                                                "처음으로 돌아가기",
+                                                id="new-input-button",
+                                                className="secondary-button",
+                                            ),
+                                        ],
+                                        className="result-actions",
+                                    ),
+                                ],
+                                className="result-topline",
                             ),
-                            html.Div(id="status-pill", className="status-pill status-empty"),
-                        ],
-                        className="result-heading",
-                    ),
-                    html.Section(id="metric-grid", className="metric-grid"),
-                    dcc.Tabs(
-                        id="detail-tabs",
-                        value="overview",
-                        className="detail-tabs",
-                        children=[
-                            dcc.Tab(
-                                label="종합",
-                                value="overview",
-                                children=html.Section(
-                                    [
-                                        html.Div(
-                                            [html.H3("판정 요약"), html.Div(id="result-summary")],
-                                            className="panel",
-                                        ),
-                                        html.Div(
-                                            [html.H3("적용 임계값"), html.Div(id="threshold-list")],
-                                            className="panel",
-                                        ),
-                                        html.Div(
-                                            [html.H3("경고 및 오류"), html.Div(id="issues-list")],
-                                            className="panel panel-span",
-                                        ),
-                                    ],
-                                    className="overview-grid",
-                                ),
-                            ),
-                            dcc.Tab(
-                                label="로봇 작업",
-                                value="robots",
-                                children=html.Section(
-                                    [
-                                        html.Div(
-                                            [
-                                                html.H3("작업 시간 구성"),
-                                                dcc.Graph(id="robot-figure", config=_GRAPH_CONFIG),
-                                            ],
-                                            className="panel panel-chart",
-                                        ),
-                                        html.Div(
-                                            [html.H3("로봇별 지표"), html.Div(id="robot-table")],
-                                            className="panel",
-                                        ),
-                                    ],
-                                    className="stack-grid",
-                                ),
-                            ),
-                            dcc.Tab(
-                                label="충돌",
-                                value="collision",
-                                children=html.Section(
-                                    [
-                                        html.Div(
-                                            [
-                                                html.H3("TCP 안전 여유"),
-                                                dcc.Graph(
-                                                    id="collision-gauge", config=_GRAPH_CONFIG
-                                                ),
-                                            ],
-                                            className="panel panel-chart",
-                                        ),
-                                        html.Div(
-                                            [
-                                                html.H3("충돌 시간축"),
-                                                dcc.Graph(
-                                                    id="collision-timeline", config=_GRAPH_CONFIG
-                                                ),
-                                            ],
-                                            className="panel panel-chart",
-                                        ),
-                                        html.Div(
-                                            [
-                                                html.Div(
-                                                    [
-                                                        html.H3("충돌 이벤트"),
-                                                        html.Div(
-                                                            [
-                                                                dcc.Dropdown(
-                                                                    id="collision-type-filter",
-                                                                    options=[
-                                                                        {
-                                                                            "label": "전체 유형",
-                                                                            "value": "ALL",
-                                                                        },
-                                                                        {
-                                                                            "label": "ARM_ENVELOPE",
-                                                                            "value": "ARM_ENVELOPE",
-                                                                        },
-                                                                        {
-                                                                            "label": "TCP_RADIUS",
-                                                                            "value": "TCP_RADIUS",
-                                                                        },
-                                                                    ],
-                                                                    value="ALL",
-                                                                    clearable=False,
-                                                                ),
-                                                                dcc.Dropdown(
-                                                                    id="collision-pair-filter",
-                                                                    options=[
-                                                                        {
-                                                                            "label": "전체 Pair",
-                                                                            "value": "ALL",
-                                                                        },
-                                                                        {
-                                                                            "label": "R1–R2",
-                                                                            "value": "1-2",
-                                                                        },
-                                                                        {
-                                                                            "label": "R1–R3",
-                                                                            "value": "1-3",
-                                                                        },
-                                                                        {
-                                                                            "label": "R2–R3",
-                                                                            "value": "2-3",
-                                                                        },
-                                                                    ],
-                                                                    value="ALL",
-                                                                    clearable=False,
-                                                                ),
-                                                            ],
-                                                            className="table-filters",
-                                                        ),
-                                                    ],
-                                                    className="panel-heading",
-                                                ),
-                                                DataTable(
-                                                    id="collision-table",
-                                                    columns=collision_columns,
-                                                    data=[],
-                                                    **_table_style(),
-                                                ),
-                                            ],
-                                            className="panel panel-span",
-                                        ),
-                                    ],
-                                    className="overview-grid",
-                                ),
-                            ),
-                            dcc.Tab(
-                                label="형상",
-                                value="shape",
-                                children=html.Section(
-                                    [
-                                        html.Div(
-                                            [
-                                                html.H3("Layer별 형상 품질"),
-                                                dcc.Graph(id="shape-figure", config=_GRAPH_CONFIG),
-                                            ],
-                                            className="panel panel-chart",
-                                        ),
-                                        html.Div(
-                                            [
-                                                html.Div(
-                                                    [
-                                                        html.H3("Layer 지표"),
-                                                        dcc.Checklist(
-                                                            id="failed-only",
-                                                            options=[
-                                                                {
-                                                                    "label": "실패 Layer만",
-                                                                    "value": "failed",
-                                                                }
-                                                            ],
-                                                            value=[],
-                                                            className="failed-only",
-                                                        ),
-                                                    ],
-                                                    className="panel-heading",
-                                                ),
-                                                DataTable(
-                                                    id="layer-table",
-                                                    columns=layer_columns,
-                                                    data=[],
-                                                    **_table_style(),
-                                                ),
-                                            ],
-                                            className="panel",
-                                        ),
-                                    ],
-                                    className="stack-grid",
-                                ),
-                            ),
-                            dcc.Tab(
-                                label="3D 및 산출물",
-                                value="artifacts",
-                                children=html.Section(
-                                    [
-                                        html.Div(
-                                            [
-                                                html.H3("3D Replay"),
-                                                html.P(
-                                                    "검증 결과와 별도로 필요할 때만 생성합니다. "
-                                                    "프레임 간격은 검증 정밀도에 영향을 주지 "
-                                                    "않습니다.",
-                                                    className="muted-copy",
-                                                ),
-                                                html.Div(
-                                                    [
-                                                        html.Label(
-                                                            [
-                                                                html.Span("품질 프리셋"),
-                                                                dcc.RadioItems(
-                                                                    id="replay-preset",
-                                                                    options=[
-                                                                        {
-                                                                            "label": "빠름",
-                                                                            "value": "fast",
-                                                                        },
-                                                                        {
-                                                                            "label": "표준",
-                                                                            "value": "standard",
-                                                                        },
-                                                                        {
-                                                                            "label": "상세",
-                                                                            "value": "detail",
-                                                                        },
-                                                                        {
-                                                                            "label": "사용자 지정",
-                                                                            "value": "custom",
-                                                                        },
-                                                                    ],
-                                                                    value="standard",
-                                                                    inline=True,
-                                                                ),
-                                                            ],
-                                                            className="replay-field replay-presets",
-                                                        ),
-                                                        html.Label(
-                                                            [
-                                                                html.Span("프레임 간격 [초]"),
-                                                                dcc.Input(
-                                                                    id="replay-interval",
-                                                                    type="number",
-                                                                    min=1,
-                                                                    step=1,
-                                                                    value=1,
-                                                                    disabled=True,
-                                                                ),
-                                                            ],
-                                                            className="replay-field",
-                                                        ),
-                                                    ],
-                                                    className="replay-settings",
-                                                ),
-                                                html.Div(
-                                                    id="replay-estimate",
-                                                    className="replay-estimate",
-                                                ),
-                                                html.Div(
-                                                    [
-                                                        html.Button(
-                                                            "Replay 생성",
-                                                            id="replay-generate-button",
-                                                            disabled=True,
-                                                        ),
-                                                        html.Button(
-                                                            "취소",
-                                                            id="replay-cancel-button",
-                                                            disabled=True,
-                                                            className="secondary-button",
-                                                        ),
-                                                    ],
-                                                    className="replay-actions",
-                                                ),
-                                                html.Div(
-                                                    id="replay-status",
-                                                    className="replay-status is-idle",
-                                                ),
-                                                html.Progress(
-                                                    id="replay-progress",
-                                                    value="0",
-                                                    max=1,
-                                                    className="replay-progress",
-                                                ),
-                                                html.Div(id="replay-container"),
-                                            ],
-                                            className="panel replay-panel",
-                                        ),
-                                        html.Div(
-                                            [
-                                                html.H3("결과 파일"),
-                                                html.Div(
-                                                    id="artifact-list", className="artifact-list"
-                                                ),
-                                            ],
-                                            className="panel",
-                                        ),
-                                        html.Div(
-                                            id="image-gallery", className="image-gallery panel-span"
-                                        ),
-                                    ],
-                                    className="artifact-grid",
-                                ),
-                            ),
+                            html.Div(id="result-content"),
                         ],
                     ),
-                    html.Footer(str(jobs_root), id="root-path", className="root-path"),
                 ],
-                className="workspace",
+                className="validator-main",
             ),
         ],
-        className="dashboard-shell",
+        className="validator-shell",
     )
 
 
-def create_dashboard_app(
-    jobs_root: Path,
+def _format_size(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024.0 or unit == "GB":
+            return f"{size:,.1f} {unit}"
+        size /= 1024.0
+    return f"{size:,.1f} GB"
+
+
+def _replay_estimate_text(job: JobRecord, run: RunRecord, interval_s: float) -> str:
+    try:
+        estimate = estimate_replay(job, run, interval_s)
+    except (DashboardDataError, OSError, ValueError) as exc:
+        return str(exc)
+    return (
+        f"예상 {estimate.frame_count:,} frames · "
+        f"생성 시간 {estimate.time_low_s:,.0f}–{estimate.time_high_s:,.0f} s · "
+        f"파일 크기 {_format_size(estimate.size_low_bytes)}–"
+        f"{_format_size(estimate.size_high_bytes)}"
+        + (f" · {estimate.warning}" if estimate.warning else "")
+    )
+
+
+def _stl_estimate_text(run: RunRecord) -> str:
+    estimate = estimate_deposited_stl(run)
+    return (
+        f"예상 생성 시간 {estimate.time_low_s:,.0f}–{estimate.time_high_s:,.0f} s · "
+        f"파일 크기 {_format_size(estimate.size_low_bytes)}–"
+        f"{_format_size(estimate.size_high_bytes)}"
+    )
+
+
+def _preview_note(preview: Any) -> str:
+    point_text = ", ".join(
+        f"R{robot_id} {count:,}점" for robot_id, count in preview.trajectory_points_shown.items()
+    )
+    base = (
+        f"Target {preview.target_faces_shown:,}/{preview.target_faces_total:,} faces · "
+        f"Trajectory preview {point_text}"
+    )
+    return base + (" · " + " ".join(preview.warnings) if preview.warnings else "")
+
+
+def _artifact_url(token: str, run: RunRecord, filename: str) -> str:
+    return f"/artifacts/{quote(token)}/{quote(run.run_name)}/{quote(filename)}"
+
+
+def _grid(
+    grid_id: str,
+    columns: list[tuple[str, str]],
+    *,
+    rows: list[JsonDict] | None = None,
+    page_size: int = 20,
+    server_side: bool = False,
+) -> Any:
+    options: JsonDict = {
+        "pagination": True,
+        "paginationPageSize": page_size,
+        "paginationPageSizeSelector": False,
+        "domLayout": "autoHeight",
+    }
+    if server_side:
+        options["cacheBlockSize"] = page_size
+    properties: JsonDict = {
+        "id": grid_id,
+        "columnDefs": [
+            {"headerName": label, "field": field, "sortable": True, "resizable": True}
+            for label, field in columns
+        ],
+        "defaultColDef": {"filter": False, "minWidth": 110},
+        "dashGridOptions": options,
+        "className": "ag-theme-quartz-dark result-grid",
+        "style": {"width": "100%"},
+    }
+    if not server_side:
+        properties["rowData"] = rows or []
+    else:
+        properties["rowModelType"] = "infinite"
+    return dag.AgGrid(**properties)
+
+
+def _layer_display_rows(rows: list[JsonDict]) -> list[JsonDict]:
+    """Format layer metrics for scanning while retaining numeric CSV sorting."""
+    formatted: list[JsonDict] = []
+    for row in rows:
+        formatted.append(
+            {
+                "layer_index": int(row.get("layer_index", 0)),
+                "z_slice_mm": f"{float(row.get('z_slice_mm', 0.0)):,.2f}",
+                "coverage": f"{float(row.get('coverage', 0.0)):.4%}",
+                "underfill_ratio": f"{float(row.get('underfill_ratio', 0.0)):.4%}",
+                "overfill_ratio": (
+                    "—"
+                    if row.get("overfill_ratio") is None
+                    else f"{float(row['overfill_ratio']):.4%}"
+                ),
+                "iou": f"{float(row.get('iou', 0.0)):.4%}",
+                "passed": "PASS" if bool(row.get("passed")) else "FAIL",
+            }
+        )
+    return formatted
+
+
+def _collision_display_rows(rows: list[JsonDict]) -> list[JsonDict]:
+    """Format collision events consistently for initial and paged table data."""
+    formatted: list[JsonDict] = []
+    for row in rows:
+        formatted.append(
+            {
+                "event_id": int(row.get("event_id", 0)),
+                "type": str(row.get("type", "")),
+                "robot_a": f"R{int(row.get('robot_a', 0))}",
+                "robot_b": f"R{int(row.get('robot_b', 0))}",
+                "start_s": f"{float(row.get('start_s', 0.0)):,.3f}",
+                "end_s": f"{float(row.get('end_s', 0.0)):,.3f}",
+                "duration_s": f"{float(row.get('duration_s', 0.0)):,.3f}",
+                "minimum_distance_mm": f"{float(row.get('minimum_distance_mm', 0.0)):,.2f}",
+                "required_distance_mm": f"{float(row.get('required_distance_mm', 0.0)):,.2f}",
+                "minimum_safety_margin_mm": (
+                    f"{float(row.get('minimum_safety_margin_mm', 0.0)):,.2f}"
+                ),
+                "minimum_capsule_surface_clearance_mm": (
+                    "—"
+                    if row.get("minimum_capsule_surface_clearance_mm") is None
+                    else f"{float(row['minimum_capsule_surface_clearance_mm']):,.2f}"
+                ),
+                "minimum_distance_time_s": (
+                    f"{float(row.get('minimum_distance_time_s', 0.0)):,.3f}"
+                ),
+                "closest_a_xy_mm": (
+                    f"({float(row.get('closest_a_x_mm', 0.0)):,.2f}, "
+                    f"{float(row.get('closest_a_y_mm', 0.0)):,.2f})"
+                ),
+                "closest_b_xy_mm": (
+                    f"({float(row.get('closest_b_x_mm', 0.0)):,.2f}, "
+                    f"{float(row.get('closest_b_y_mm', 0.0)):,.2f})"
+                ),
+            }
+        )
+    return formatted
+
+
+def _status_metric_card(label: str, passed: object, detail: str) -> html.Div:
+    verdict = "✓ PASS" if passed is True else "✕ FAIL" if passed is False else "— 확인 불가"
+    tone = "pass" if passed is True else "fail" if passed is False else "unknown"
+    return html.Div(
+        [
+            html.Div(label, className="metric-label"),
+            html.Div(verdict, className="metric-value"),
+            html.Div(detail, className="metric-detail"),
+        ],
+        className=f"metric-card result-primary-card check-{tone}",
+    )
+
+
+def _duration_label(seconds: float) -> str:
+    rounded = max(0, int(round(seconds)))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}시간 {minutes:02d}분 {remaining_seconds:02d}초"
+    if minutes:
+        return f"{minutes}분 {remaining_seconds:02d}초"
+    return f"{remaining_seconds}초"
+
+
+def _pair_label(value: object) -> str:
+    if isinstance(value, list) and len(value) == 2:
+        return f"R{value[0]}–R{value[1]}"
+    return "Robot pair 확인 불가"
+
+
+def _robot_result_rows(robot_rows: list[JsonDict], reach_rows: list[JsonDict]) -> list[JsonDict]:
+    reach_by_robot = {
+        int(row.get("robot_id", 0)): row
+        for row in reach_rows
+        if isinstance(row.get("robot_id"), int | float | str)
+    }
+    combined: list[JsonDict] = []
+    for robot in robot_rows:
+        robot_id = int(robot.get("robot_id", 0))
+        reach = reach_by_robot.get(robot_id, {})
+        completion_s = float(robot.get("completion_s", 0.0))
+        combined.append(
+            {
+                "robot_id": f"R{robot_id}",
+                "completion_s": f"{completion_s:,.2f} s · {_duration_label(completion_s)}",
+                "state_time_s": (
+                    f"{float(robot.get('deposition_time_s', 0.0)):,.1f} / "
+                    f"{float(robot.get('travel_time_s', 0.0)):,.1f} / "
+                    f"{float(robot.get('wait_time_s', 0.0)):,.1f}"
+                ),
+                "path_length_mm": (
+                    f"{float(robot.get('deposition_length_mm', 0.0)):,.1f} / "
+                    f"{float(robot.get('travel_length_mm', 0.0)):,.1f}"
+                ),
+                "mean_speed_mm_s": (
+                    f"{float(robot.get('mean_deposition_speed_mm_s', 0.0) or 0.0):,.2f} / "
+                    f"{float(robot.get('mean_travel_speed_mm_s', 0.0) or 0.0):,.2f}"
+                ),
+                "reach_use": (
+                    f"{float(reach.get('maximum_reach_mm', 0.0)):,.1f} / "
+                    f"{float(reach.get('reach_radius_mm', 0.0)):,.1f} mm · "
+                    f"{float(reach.get('utilization_ratio', 0.0)):.1%}"
+                ),
+                "reach_margin_mm": f"{float(reach.get('minimum_margin_mm', 0.0)):,.2f}",
+                "reach_result": "PASS" if bool(reach.get("passed")) else "FAIL",
+            }
+        )
+    return combined
+
+
+def _collision_evidence_card(label: str, data: JsonDict, *, arm: bool) -> html.Div:
+    enabled = bool(data.get("enabled", False))
+    passed = bool(data.get("passed", False))
+    distance_key = "centerline_distance_at_worst_mm" if arm else "minimum_distance_mm"
+    required_key = "required_distance_at_worst_mm" if arm else "required_distance_at_minimum_mm"
+    distance = float(data.get(distance_key, 0.0))
+    required = float(data.get(required_key, 0.0))
+    margin = distance - required
+    verdict = "검사 꺼짐" if not enabled else "PASS" if passed else "FAIL"
+    tone = "unknown" if not enabled else "pass" if passed else "fail"
+    time_s = float(data.get("time_s", 0.0))
+    return html.Div(
+        [
+            html.Div(
+                [html.H3(label), html.Strong(verdict)],
+                className="safety-card-heading",
+            ),
+            html.Div(
+                [
+                    html.Div([html.Span("측정 최소거리"), html.Strong(f"{distance:,.2f} mm")]),
+                    html.Div([html.Span("요구 최소거리"), html.Strong(f"{required:,.2f} mm")]),
+                    html.Div([html.Span("안전 여유"), html.Strong(f"{margin:,.2f} mm")]),
+                ],
+                className="safety-values",
+            ),
+            html.P(
+                f"{distance:,.2f} − {required:,.2f} = {margin:,.2f} mm",
+                className="safety-equation",
+            ),
+            html.P(
+                f"최악 조건: {_pair_label(data.get('pair'))} · {time_s:,.3f} s · "
+                f"이벤트 {int(data.get('event_count', 0)):,}건",
+                className="muted-copy",
+            ),
+        ],
+        className=f"safety-card check-{tone}",
+    )
+
+
+def _result_findings_content(payload: JsonDict) -> html.Div:
+    reasons = payload.get("failure_reasons", [])
+    reason_list = [str(reason) for reason in reasons] if isinstance(reasons, list) else []
+    raw_issues = payload.get("issues", [])
+    issues = (
+        [item for item in raw_issues if isinstance(item, dict)]
+        if isinstance(raw_issues, list)
+        else []
+    )
+    warnings = [item for item in issues if item.get("severity") == "warning"]
+    violations = [item for item in issues if item.get("severity") == "violation"]
+    children: list[Any] = []
+    if reason_list:
+        children.extend(
+            [
+                html.H4("FAIL 사유"),
+                html.Ol([html.Li(reason) for reason in reason_list], className="failure-list"),
+            ]
+        )
+    else:
+        children.append(
+            html.Div(
+                [html.Strong("PASS"), html.Span("활성화된 모든 판정 기준을 충족했습니다.")],
+                className="result-clear-message",
+            )
+        )
+    if warnings:
+        children.extend(
+            [
+                html.H4("경고와 추가 확인사항"),
+                _issues_content({"issues": warnings}),
+            ]
+        )
+    if violations:
+        violation_content = _issues_content({"issues": violations})
+        if reason_list:
+            children.append(
+                html.Details(
+                    [
+                        html.Summary(f"FAIL 세부 판정 기록 {len(violations):,}건 보기"),
+                        violation_content,
+                    ],
+                    className="result-issue-details",
+                )
+            )
+        else:
+            children.extend([html.H4("세부 판정 기록"), violation_content])
+    if not reason_list and not issues:
+        children.append(html.P("별도로 확인할 경고나 위반이 없습니다.", className="muted-copy"))
+    return html.Div(children, className="result-findings")
+
+
+def _arm_envelope_snapshot(payload: JsonDict, job_dir: Path) -> go.Figure:
+    collision = payload.get("collision")
+    arm = collision.get("arm_envelope") if isinstance(collision, dict) else None
+    if not isinstance(arm, dict):
+        return _empty_figure("Arm Envelope 최악 시점 정보가 없습니다", height=520)
+    tcp_positions = arm.get("tcp_positions_xy_mm")
+    closest = arm.get("closest_points_xy_mm")
+    if not isinstance(tcp_positions, list) or len(tcp_positions) != 3:
+        return _empty_figure("Arm Envelope TCP 위치 정보가 없습니다", height=520)
+    try:
+        config = load_config(job_dir / "config.yaml")
+        figure = go.Figure()
+        workspace_x, workspace_y = _capsule_xy(
+            config.workspace.center_xy_mm,
+            config.workspace.center_xy_mm,
+            config.workspace.radius_mm,
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=workspace_x,
+                y=workspace_y,
+                mode="lines",
+                fill="toself",
+                fillcolor="rgba(56,189,248,0.06)",
+                line={"color": "rgba(56,189,248,0.55)", "dash": "dot"},
+                name="Workspace",
+            )
+        )
+        bases = [robot.base_xyz_mm[:2] for robot in config.robots]
+        triangle = [*bases, bases[0]]
+        figure.add_trace(
+            go.Scatter(
+                x=[point[0] for point in triangle],
+                y=[point[1] for point in triangle],
+                mode="lines+markers",
+                line={"color": "#64748b", "dash": "dot"},
+                marker={"symbol": "triangle-up", "size": 9},
+                name="Robot bases",
+            )
+        )
+        colors = ("#2f8fff", "#ff9d42", "#34d399")
+        for index, (robot, tcp_raw) in enumerate(zip(config.robots, tcp_positions, strict=True)):
+            if not isinstance(tcp_raw, list) or len(tcp_raw) != 2:
+                continue
+            tcp = (float(tcp_raw[0]), float(tcp_raw[1]))
+            physical_x, physical_y = _capsule_xy(
+                robot.base_xyz_mm[:2], tcp, robot.arm_envelope_radius_mm
+            )
+            decision_x, decision_y = _capsule_xy(
+                robot.base_xyz_mm[:2],
+                tcp,
+                robot.arm_envelope_radius_mm + config.collision.arm_clearance_mm / 2.0,
+            )
+            figure.add_trace(
+                go.Scatter(
+                    x=physical_x,
+                    y=physical_y,
+                    mode="lines",
+                    fill="toself",
+                    fillcolor=(
+                        f"rgba({int(colors[index][1:3], 16)},"
+                        f"{int(colors[index][3:5], 16)},"
+                        f"{int(colors[index][5:7], 16)},0.22)"
+                    ),
+                    line={"color": colors[index], "width": 1},
+                    name=f"R{robot.id} 실제 Capsule",
+                )
+            )
+            figure.add_trace(
+                go.Scatter(
+                    x=decision_x,
+                    y=decision_y,
+                    mode="lines",
+                    line={"color": colors[index], "width": 2, "dash": "dash"},
+                    name=f"R{robot.id} 판정 외곽선",
+                )
+            )
+            figure.add_trace(
+                go.Scatter(
+                    x=[robot.base_xyz_mm[0], tcp[0]],
+                    y=[robot.base_xyz_mm[1], tcp[1]],
+                    mode="lines+markers",
+                    line={"color": colors[index], "width": 2},
+                    marker={"size": 6},
+                    name=f"R{robot.id} 중심선",
+                    showlegend=False,
+                )
+            )
+        if isinstance(closest, list) and len(closest) == 2:
+            left, right = closest
+            if isinstance(left, list) and isinstance(right, list):
+                passed = bool(arm.get("passed", False))
+                figure.add_trace(
+                    go.Scatter(
+                        x=[left[0], right[0]],
+                        y=[left[1], right[1]],
+                        mode="lines+markers",
+                        line={"color": "#21d4a3" if passed else "#ff6376", "width": 4},
+                        marker={"size": 8},
+                        name="최단 중심선 거리",
+                    )
+                )
+        pair = arm.get("pair", [])
+        pair_label = f"R{pair[0]}–R{pair[1]}" if isinstance(pair, list) and len(pair) == 2 else "—"
+        figure.update_layout(
+            title=(
+                f"{pair_label} · {float(arm.get('time_s', 0.0)):,.3f} s · "
+                f"안전 여유 {float(arm.get('minimum_safety_margin_mm', 0.0)):,.3f} mm · "
+                f"{'PASS' if arm.get('passed') else 'FAIL'}"
+            ),
+            xaxis_title="X [mm]",
+            yaxis_title="Y [mm]",
+        )
+        x_values = [
+            float(value) for trace in figure.data for value in (trace.x or ()) if value is not None
+        ]
+        y_values = [
+            float(value) for trace in figure.data for value in (trace.y or ()) if value is not None
+        ]
+        if x_values and y_values:
+            x_span = max(x_values) - min(x_values)
+            y_span = max(y_values) - min(y_values)
+            padding = max(50.0, max(x_span, y_span) * 0.05)
+            figure.update_xaxes(
+                range=[min(x_values) - padding, max(x_values) + padding],
+                constrain="domain",
+            )
+            figure.update_yaxes(
+                range=[min(y_values) - padding, max(y_values) + padding],
+                scaleanchor="x",
+                scaleratio=1.0,
+                constrain="domain",
+            )
+        return _style_figure(figure, height=960)
+    except (OSError, ValueError):
+        return _empty_figure("Arm Envelope 최악 시점을 표시할 수 없습니다", height=960)
+
+
+def _shape_summary_cards(shape: JsonDict, layer_rows: list[JsonDict]) -> list[html.Div]:
+    maximum_underfill = max(
+        (float(row.get("underfill_ratio", 0.0) or 0.0) for row in layer_rows),
+        default=0.0,
+    )
+    maximum_overfill = max(
+        (float(row.get("overfill_ratio", 0.0) or 0.0) for row in layer_rows),
+        default=0.0,
+    )
+    return [
+        _metric_card("전체 Coverage", f"{float(shape.get('coverage', 0.0)):.4%}"),
+        _metric_card("전체 IoU", f"{float(shape.get('iou', 0.0)):.4%}"),
+        _metric_card("최대 Layer Underfill", f"{maximum_underfill:.4%}"),
+        _metric_card("최대 Layer Overfill", f"{maximum_overfill:.4%}"),
+        _metric_card(
+            "실패 Layer",
+            f"{int(shape.get('failed_layer_count', 0)):,} / "
+            f"{int(shape.get('evaluated_layer_count', 0)):,}",
+            f"비율 {float(shape.get('failed_layer_ratio', 0.0)):.2%}",
+        ),
+    ]
+
+
+def _result_view(
+    token: str,
+    job: JobRecord,
+    run: RunRecord,
+    selected_tab: str = "overview",
+) -> html.Div:
+    payload = run.payload
+    if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
+        return html.Div(
+            [
+                html.Div(
+                    [
+                        html.Strong("재검증 필요"),
+                        html.Span(job.path.name),
+                        html.Span(run.completed_label),
+                    ],
+                    className="result-status result-error",
+                ),
+                html.Section(
+                    [
+                        html.H3("현재 결과 형식이 아닙니다"),
+                        html.P(
+                            "이 결과는 간결한 결과 bundle과 구조화 issue를 사용하는 schema "
+                            f"{RESULT_SCHEMA_VERSION} 형식이 아닙니다. 입력 파일과 기존 "
+                            "결과는 그대로 유지되며, "
+                            "현재 화면에서 보려면 Validation을 다시 실행해야 합니다."
+                        ),
+                    ],
+                    className="panel error-result-panel",
+                ),
+            ]
+        )
+    if run.status == "ERROR":
+        artifact_links = [
+            html.A(
+                [html.Strong(filename), html.Span(_format_size(path.stat().st_size))],
+                href=_artifact_url(token, run, filename),
+                target="_blank",
+                className="artifact-link",
+            )
+            for filename in ("error.json", "run.log")
+            for path in [run.directory / filename]
+            if path.is_file()
+        ]
+        return html.Div(
+            [
+                html.Div(
+                    [
+                        html.Div(
+                            [
+                                html.Strong("ERROR"),
+                                html.Span(job.path.name),
+                                html.Span(run.completed_label),
+                            ],
+                            className="result-status result-error",
+                        ),
+                        html.Code(str(run.directory)),
+                    ],
+                    className="result-banner",
+                ),
+                html.Section(
+                    [
+                        html.H3("Validation 실행 오류"),
+                        html.Code(
+                            str(payload.get("code", "VALIDATION_ERROR")),
+                            className="error-code",
+                        ),
+                        html.P(str(payload.get("message", run.load_error or "알 수 없는 오류"))),
+                        html.P(
+                            "상세 실행 기록은 아래 error.json과 run.log에서 확인할 수 있습니다.",
+                            className="muted-copy",
+                        ),
+                        html.Div(artifact_links, className="artifact-list"),
+                    ],
+                    className="panel error-result-panel",
+                ),
+            ]
+        )
+    schedule = payload.get("schedule", {}) if isinstance(payload.get("schedule"), dict) else {}
+    collision = payload.get("collision", {}) if isinstance(payload.get("collision"), dict) else {}
+    shape = payload.get("shape", {}) if isinstance(payload.get("shape"), dict) else {}
+    reach = payload.get("reach", {}) if isinstance(payload.get("reach"), dict) else {}
+    csv_errors: list[JsonDict] = []
+
+    def load_rows(filename: str) -> list[JsonDict]:
+        try:
+            return read_csv_records(run.directory, filename)
+        except DashboardDataError as exc:
+            csv_errors.append(
+                {
+                    "severity": "warning",
+                    "code": "RESULT_CSV_LOAD_ERROR",
+                    "message": str(exc),
+                    "robot_id": None,
+                    "start_s": None,
+                    "end_s": None,
+                }
+            )
+            return []
+
+    robot_rows = load_rows("robot_metrics.csv")
+    collision_rows = load_rows("collision_events.csv")
+    layer_rows = load_rows("layer_metrics.csv")
+    if csv_errors:
+        payload = {
+            **payload,
+            "issues": [
+                *(payload.get("issues", []) if isinstance(payload.get("issues"), list) else []),
+                *csv_errors,
+            ],
+        }
+    status = run.status
+    arm = (
+        collision.get("arm_envelope", {}) if isinstance(collision.get("arm_envelope"), dict) else {}
+    )
+    tcp = collision.get("tcp_radius", {}) if isinstance(collision.get("tcp_radius"), dict) else {}
+    minimum_tcp = float(tcp.get("minimum_distance_mm", 0.0))
+    required_tcp = float(tcp.get("required_distance_at_minimum_mm", 0.0))
+    tcp_margin = minimum_tcp - required_tcp
+    failed_layer_count = int(shape.get("failed_layer_count", 0))
+    evaluated_layer_count = int(shape.get("evaluated_layer_count", 0))
+    makespan_s = float(schedule.get("makespan_s", 0.0))
+    reach_rows = reach.get("robots", []) if isinstance(reach.get("robots"), list) else []
+    typed_reach_rows = [row for row in reach_rows if isinstance(row, dict)]
+    worst_reach = min(
+        typed_reach_rows,
+        key=lambda row: float(row.get("minimum_margin_mm", 0.0)),
+        default={},
+    )
+    worst_reach_margin = float(worst_reach.get("minimum_margin_mm", 0.0))
+    overall_coverage = float(shape.get("coverage", 0.0))
+    overall_iou = float(shape.get("iou", 0.0))
+    target_volume = float(shape.get("target_volume_mm3", 0.0))
+    deposited_volume = float(shape.get("deposited_volume_mm3", 0.0))
+    underfill_volume = float(
+        shape.get(
+            "underfill_volume_mm3",
+            target_volume * float(shape.get("underfill_ratio", 0.0)),
+        )
+    )
+    overfill_volume = float(
+        shape.get(
+            "overfill_volume_mm3",
+            target_volume * float(shape.get("overfill_ratio", 0.0)),
+        )
+    )
+    arm_events = int(arm.get("event_count", 0))
+    tcp_events = int(tcp.get("event_count", 0))
+    cards = [
+        _metric_card(
+            "전체 작업시간",
+            _duration_label(makespan_s),
+            f"Makespan {makespan_s:,.2f} s",
+        ),
+        _status_metric_card(
+            "Robot Reach",
+            reach.get("passed"),
+            f"최소 여유 {worst_reach_margin:,.2f} mm · R{int(worst_reach.get('robot_id', 0))}",
+        ),
+        _status_metric_card(
+            "로봇 간 충돌 안전",
+            collision.get("passed"),
+            f"이벤트 Arm {arm_events:,}건 / TCP {tcp_events:,}건 · "
+            f"최소 여유 Arm {float(arm.get('minimum_safety_margin_mm', 0.0)):,.1f} mm / "
+            f"TCP {tcp_margin:,.1f} mm",
+        ),
+        _status_metric_card(
+            "적층 형상",
+            shape.get("passed"),
+            f"Coverage {overall_coverage:.2%} · "
+            f"IoU {overall_iou:.2%} · "
+            f"실패 Layer {failed_layer_count:,}/{evaluated_layer_count:,}",
+        ),
+    ]
+    robot_result_rows = _robot_result_rows(robot_rows, typed_reach_rows)
+    artifact_links = []
+    for filename in sorted(ALLOWED_ARTIFACTS):
+        path = run.directory / filename
+        if path.is_file():
+            artifact_links.append(
+                html.A(
+                    [
+                        html.Div(
+                            [
+                                html.Strong(_ARTIFACT_LABELS.get(filename, filename)),
+                                html.Small(filename),
+                            ]
+                        ),
+                        html.Span(_format_size(path.stat().st_size)),
+                    ],
+                    href=_artifact_url(token, run, filename),
+                    target="_blank",
+                    className="artifact-link",
+                )
+            )
+    has_replay = (run.directory / "replay.html").is_file()
+    has_deposited_stl = (run.directory / "deposited.stl").is_file()
+    replay = (
+        html.Iframe(
+            src=_artifact_url(token, run, "replay.html"),
+            title="WAAM 3D replay",
+            className="replay-frame",
+        )
+        if has_replay
+        else html.Div("이 결과에는 Replay가 없습니다.", className="empty-state")
+    )
+    replay_status_payload = read_replay_status(run.directory) or {}
+    replay_verdict = str(replay_status_payload.get("verdict", "")).upper()
+    replay_state = str(replay_status_payload.get("state", "IDLE")).upper()
+    replay_status_message = str(replay_status_payload.get("message", ""))
+    if has_replay:
+        replay_status_message = replay_status_message or "Replay 생성이 완료되었습니다."
+        replay_status_class = "replay-status is-success"
+    elif replay_verdict == "ERROR":
+        replay_status_message = f"Replay 생성 실패: {replay_status_message}"
+        replay_status_class = "replay-status is-error"
+    elif replay_state == "RUNNING":
+        replay_status_message = replay_status_message or "Replay를 생성하고 있습니다."
+        replay_status_class = "replay-status is-running"
+    else:
+        replay_status_message = replay_status_message or "Replay 생성 대기"
+        replay_status_class = "replay-status is-idle"
+    replay_progress = min(
+        1.0,
+        max(0.0, float(replay_status_payload.get("progress", 0.0) or 0.0)),
+    )
+    stl_status_payload = read_deposited_stl_status(run.directory) or {}
+    stl_progress = min(1.0, max(0.0, float(stl_status_payload.get("progress", 0.0) or 0.0)))
+    if has_deposited_stl:
+        stl_status_message = "deposited.stl 생성이 완료되었습니다."
+        stl_status_class = "replay-status is-success"
+    elif str(stl_status_payload.get("verdict", "")).upper() == "ERROR":
+        stl_status_message = f"적층 STL 생성 실패: {stl_status_payload.get('message', '')}"
+        stl_status_class = "replay-status is-error"
+    elif str(stl_status_payload.get("state", "")).upper() == "RUNNING":
+        stl_status_message = str(stl_status_payload.get("message", "적층 STL 생성 중입니다."))
+        stl_status_class = "replay-status is-running"
+    else:
+        stl_status_message = "적층 STL 생성 대기"
+        stl_status_class = "replay-status is-idle"
+    replay_interval = preset_interval_s(float(schedule.get("makespan_s", 0.0)), "standard")
+    if collision_rows:
+        collision_event_sections: list[html.Section] = [
+            html.Section(
+                [
+                    html.H3("충돌 이벤트 시간축"),
+                    dcc.Graph(
+                        figure=_collision_timeline(collision_rows),
+                        config=_GRAPH_CONFIG,
+                    ),
+                ],
+                className="panel",
+            ),
+            html.Section(
+                [
+                    html.H3("충돌 이벤트 상세"),
+                    _grid(
+                        "collision-table",
+                        [
+                            ("ID", "event_id"),
+                            ("유형", "type"),
+                            ("Robot A", "robot_a"),
+                            ("Robot B", "robot_b"),
+                            ("시작 [s]", "start_s"),
+                            ("종료 [s]", "end_s"),
+                            ("지속 [s]", "duration_s"),
+                            ("측정 거리 [mm]", "minimum_distance_mm"),
+                            ("요구 거리 [mm]", "required_distance_mm"),
+                            ("안전 여유 [mm]", "minimum_safety_margin_mm"),
+                            ("최악 시각 [s]", "minimum_distance_time_s"),
+                        ],
+                        page_size=20,
+                        server_side=True,
+                    ),
+                ],
+                className="panel",
+            ),
+        ]
+    else:
+        collision_event_sections = [
+            html.Section(
+                [
+                    html.H3("충돌 이벤트"),
+                    html.Div(
+                        "기록된 Arm Envelope 또는 TCP Radius 충돌 이벤트가 없습니다.",
+                        className="empty-state success-border",
+                    ),
+                ],
+                className="panel panel-span compact-panel",
+            )
+        ]
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Strong(status),
+                            html.Span(job.path.name),
+                            html.Span(run.completed_label),
+                        ],
+                        className=f"result-status result-{status.lower()}",
+                    ),
+                    html.Code(str(run.directory)),
+                ],
+                className="result-banner",
+            ),
+            html.Section(cards, className="metric-grid result-metrics"),
+            dcc.Tabs(
+                id="result-tabs",
+                value=(
+                    selected_tab
+                    if selected_tab in {"overview", "robots", "collision", "shape", "artifacts"}
+                    else "overview"
+                ),
+                className="detail-tabs",
+                children=[
+                    dcc.Tab(
+                        label="판정 요약",
+                        value="overview",
+                        children=html.Div(
+                            [
+                                html.Section(
+                                    [
+                                        html.H3("판정 결과와 확인사항"),
+                                        _result_findings_content(payload),
+                                    ],
+                                    className="panel panel-span result-findings-panel",
+                                ),
+                            ],
+                            className="overview-grid",
+                        ),
+                    ),
+                    dcc.Tab(
+                        label="로봇·일정",
+                        value="robots",
+                        children=html.Div(
+                            [
+                                html.Section(
+                                    [
+                                        html.H3("로봇별 상태 시간 비율"),
+                                        html.P(
+                                            "Deposition(적층), Travel(비적층 이동), "
+                                            "Wait(위치 유지 대기), 완료 후 비활성의 "
+                                            "Makespan 대비 시간입니다.",
+                                            className="muted-copy",
+                                        ),
+                                        dcc.Graph(
+                                            figure=_robot_figure(robot_rows), config=_GRAPH_CONFIG
+                                        ),
+                                    ],
+                                    className="panel panel-span",
+                                ),
+                                html.Section(
+                                    [
+                                        html.H3("로봇별 작업·Reach 상세"),
+                                        html.P(
+                                            "D/T/W 값은 상태별 시간, D/T 값은 적층/비적층 "
+                                            "이동을 뜻합니다. Reach는 최대 사용거리와 설정 한계를 "
+                                            "한 항목에서 비교합니다.",
+                                            className="muted-copy",
+                                        ),
+                                        _grid(
+                                            "robot-metrics-table",
+                                            [
+                                                ("Robot", "robot_id"),
+                                                ("완료", "completion_s"),
+                                                ("D/T/W 시간 [s]", "state_time_s"),
+                                                ("D/T 거리 [mm]", "path_length_mm"),
+                                                ("D/T 평균속도", "mean_speed_mm_s"),
+                                                ("최대/한계 Reach", "reach_use"),
+                                                ("Reach 여유 [mm]", "reach_margin_mm"),
+                                                ("Reach 판정", "reach_result"),
+                                            ],
+                                            rows=robot_result_rows,
+                                            page_size=10,
+                                        ),
+                                    ],
+                                    className="panel panel-span",
+                                ),
+                            ],
+                            className="overview-grid",
+                        ),
+                    ),
+                    dcc.Tab(
+                        label="충돌 안전",
+                        value="collision",
+                        children=html.Div(
+                            [
+                                html.Section(
+                                    [
+                                        html.H3("안전거리 판정"),
+                                        html.P(
+                                            "측정 최소거리가 요구 최소거리보다 크면 안전 여유가 "
+                                            "양수입니다. Arm은 Base–TCP Capsule 중심선, TCP는 "
+                                            "두 끝점 사이의 XY 거리를 검사합니다.",
+                                            className="muted-copy",
+                                        ),
+                                        html.Div(
+                                            [
+                                                _collision_evidence_card(
+                                                    "Arm Envelope 안전거리", arm, arm=True
+                                                ),
+                                                _collision_evidence_card(
+                                                    "TCP Radius 안전거리", tcp, arm=False
+                                                ),
+                                            ],
+                                            className="safety-card-grid",
+                                        ),
+                                    ],
+                                    className="panel panel-span safety-summary-panel",
+                                ),
+                                html.Section(
+                                    [
+                                        html.H3("Arm Envelope 최악 시점"),
+                                        html.P(
+                                            "채움 영역은 실제 Capsule, 점선은 공통 안전거리의 "
+                                            "절반을 추가한 판정 외곽선입니다. 연결선은 두 중심선의 "
+                                            "최단거리를 나타냅니다.",
+                                            className="muted-copy",
+                                        ),
+                                        dcc.Graph(
+                                            figure=_arm_envelope_snapshot(payload, job.path),
+                                            config=_GRAPH_CONFIG,
+                                            className="arm-snapshot-graph",
+                                        ),
+                                    ],
+                                    className="panel panel-span",
+                                ),
+                                *collision_event_sections,
+                            ],
+                            className="overview-grid",
+                        ),
+                    ),
+                    dcc.Tab(
+                        label="형상",
+                        value="shape",
+                        children=html.Div(
+                            [
+                                html.Section(
+                                    [
+                                        html.H3("형상 판정과 핵심 지표"),
+                                        html.P(
+                                            "Coverage는 Target이 채워진 비율, IoU는 Target과 "
+                                            "Deposition의 전체 겹침 정도입니다. Underfill과 "
+                                            "Overfill은 낮을수록 좋습니다.",
+                                            className="muted-copy",
+                                        ),
+                                        html.Div(
+                                            _shape_summary_cards(shape, layer_rows),
+                                            className="metric-grid shape-summary-grid",
+                                        ),
+                                        html.P(
+                                            f"Layer 누계 체적 · Target "
+                                            f"{target_volume:,.1f} mm³ / "
+                                            f"Deposition {deposited_volume:,.1f} mm³ / "
+                                            f"Underfill {underfill_volume:,.1f} mm³ / "
+                                            f"Overfill {overfill_volume:,.1f} mm³",
+                                            className="shape-volume-note",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.H4("형상 판정 기준"),
+                                                html.Div(
+                                                    _threshold_content(load_thresholds(job.path)),
+                                                    className="threshold-details",
+                                                ),
+                                            ],
+                                            className="shape-threshold-details",
+                                        ),
+                                    ],
+                                    className="panel panel-span shape-summary-panel",
+                                ),
+                                html.Section(
+                                    [
+                                        html.H3("Layer별 일치율과 오차"),
+                                        html.P(
+                                            "위 그래프는 Coverage·IoU, 아래 그래프는 작은 "
+                                            "Underfill·Overfill·IoU 손실을 확대합니다. "
+                                            "Layer 판정은 IoU 기준을 사용합니다.",
+                                            className="muted-copy",
+                                        ),
+                                        html.P(
+                                            shape_variation_message(layer_rows),
+                                            className="shape-volume-note",
+                                        ),
+                                        dcc.Graph(
+                                            figure=_shape_figure(
+                                                layer_rows, load_thresholds(job.path)
+                                            ),
+                                            config=_GRAPH_CONFIG,
+                                        ),
+                                    ],
+                                    className="panel panel-span",
+                                ),
+                                html.Section(
+                                    [
+                                        html.H3("Layer별 수치"),
+                                        _grid(
+                                            "layer-table",
+                                            [
+                                                ("Layer", "layer_index"),
+                                                ("Z [mm]", "z_slice_mm"),
+                                                ("Coverage", "coverage"),
+                                                ("Underfill", "underfill_ratio"),
+                                                ("Overfill", "overfill_ratio"),
+                                                ("IoU", "iou"),
+                                                ("판정", "passed"),
+                                            ],
+                                            page_size=25,
+                                            server_side=True,
+                                        ),
+                                    ],
+                                    className="panel panel-span",
+                                ),
+                            ],
+                            className="overview-grid",
+                        ),
+                    ),
+                    dcc.Tab(
+                        label="산출물",
+                        value="artifacts",
+                        children=html.Div(
+                            [
+                                html.Section(
+                                    [
+                                        html.H3("결과 파일"),
+                                        html.P(
+                                            "핵심 결과 파일과 생성이 완료된 추가 산출물을 "
+                                            "열거나 내려받을 수 있습니다.",
+                                            className="muted-copy",
+                                        ),
+                                        html.Div(artifact_links, className="artifact-list"),
+                                    ],
+                                    className=(
+                                        "panel panel-span compact-panel artifact-files-panel"
+                                    ),
+                                ),
+                                html.Section(
+                                    [
+                                        html.H3("추가 산출물 생성"),
+                                        html.P(
+                                            "Validation은 가벼운 핵심 결과만 저장합니다. 필요한 "
+                                            "산출물만 현재 입력 지문을 확인한 뒤 생성합니다.",
+                                            className="muted-copy",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Div(
+                                                    [
+                                                        html.H4("명목 적층 형상 STL"),
+                                                        html.Div(
+                                                            _stl_estimate_text(run),
+                                                            id="stl-estimate",
+                                                        ),
+                                                        html.Button(
+                                                            (
+                                                                "deposited.stl 다시 생성"
+                                                                if has_deposited_stl
+                                                                else "deposited.stl 생성"
+                                                            ),
+                                                            id="stl-generate-button",
+                                                        ),
+                                                        html.Div(
+                                                            stl_status_message,
+                                                            id="stl-status",
+                                                            className=stl_status_class,
+                                                        ),
+                                                        html.Progress(
+                                                            id="stl-progress",
+                                                            value=f"{stl_progress:.6g}",
+                                                            max="1",
+                                                        ),
+                                                    ],
+                                                    className="derived-artifact-card",
+                                                ),
+                                                html.Div(
+                                                    [
+                                                        html.H4("3D Replay"),
+                                                        html.Label(
+                                                            "프레임 간격 [s]",
+                                                            htmlFor="replay-interval",
+                                                        ),
+                                                        dcc.Input(
+                                                            id="replay-interval",
+                                                            type="number",
+                                                            min=1,
+                                                            step=1,
+                                                            value=replay_interval,
+                                                        ),
+                                                        html.Div(
+                                                            _replay_estimate_text(
+                                                                job, run, replay_interval
+                                                            ),
+                                                            id="replay-estimate",
+                                                        ),
+                                                        html.Button(
+                                                            (
+                                                                "Replay 다시 생성"
+                                                                if has_replay
+                                                                else "Replay 생성"
+                                                            ),
+                                                            id="replay-generate-button",
+                                                        ),
+                                                        html.Div(
+                                                            replay_status_message,
+                                                            id="replay-status",
+                                                            className=replay_status_class,
+                                                        ),
+                                                        html.Progress(
+                                                            id="replay-progress",
+                                                            value=f"{replay_progress:.6g}",
+                                                            max="1",
+                                                        ),
+                                                    ],
+                                                    className="derived-artifact-card",
+                                                ),
+                                            ],
+                                            className="derived-artifact-grid",
+                                        ),
+                                        replay,
+                                    ],
+                                    className="panel replay-panel",
+                                ),
+                            ],
+                            className="overview-grid artifact-tab-grid",
+                        ),
+                    ),
+                ],
+            ),
+        ]
+    )
+
+
+def create_validator_app(
+    initial_job_dir: Path,
     *,
     run_manager: ValidationRunManager | None = None,
     replay_run_manager: ReplayRunManager | None = None,
 ) -> Dash:
-    """Create the local Dash app without starting a server."""
-    initial_root = jobs_root.expanduser().resolve()
-    jobs = discover_jobs(initial_root)
-    root_lock = threading.Lock()
-    root_state = {"path": initial_root}
+    initial = initial_job_dir.expanduser().resolve()
+    registry = _ContextRegistry()
     manager = run_manager or ValidationRunManager()
     replay_manager = replay_run_manager or ReplayRunManager()
     app = Dash(
@@ -1597,808 +1594,635 @@ def create_dashboard_app(
         assets_folder=str(Path(__file__).with_name("assets")),
         title="WAAM Validator",
         update_title=cast(str, None),
+        suppress_callback_exceptions=True,
         meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
     )
-    app.layout = _build_layout(initial_root, jobs)
-    app.server.config["WAAM_JOBS_ROOT"] = str(initial_root)
-    app.server.config["WAAM_RUN_MANAGER"] = manager
-    app.server.config["WAAM_REPLAY_RUN_MANAGER"] = replay_manager
+    app.layout = _layout(initial)
+    app.server.config["WAAM_INITIAL_JOB_DIR"] = str(initial)
 
-    def current_root() -> Path:
-        with root_lock:
-            return root_state["path"]
-
-    def set_current_root(path: Path) -> None:
-        with root_lock:
-            root_state["path"] = path
-        app.server.config["WAAM_JOBS_ROOT"] = str(path)
-
-    def find_job(job_name: str | None) -> JobRecord | None:
-        if job_name is None:
-            return None
+    @app.server.get("/artifacts/<token>/<run_name>/<filename>")  # type: ignore[untyped-decorator]
+    def serve_artifact(token: str, run_name: str, filename: str) -> Any:
         try:
-            return resolve_job(current_root(), job_name)
-        except DashboardDataError:
-            return None
-
-    @app.server.get("/artifacts/<job_name>/<run_name>/<filename>")  # type: ignore[untyped-decorator]
-    def serve_artifact(job_name: str, run_name: str, filename: str) -> Any:
-        try:
-            path = resolve_artifact(current_root(), job_name, run_name, filename)
+            path = resolve_single_job_artifact(registry.get(token), run_name, filename)
         except DashboardDataError:
             abort(404)
-        inline = path.suffix.lower() in {".html", ".png", ".md", ".log"}
+        inline = path.suffix.lower() in {".html", ".md", ".log"}
         return send_file(path, as_attachment=not inline, download_name=path.name)
 
+    @app.server.get("/artifacts/<path:_invalid>")  # type: ignore[untyped-decorator]
+    def reject_malformed_artifact(_invalid: str) -> Any:
+        abort(404)
+
+    def context_run(run_data: JsonDict) -> tuple[Path, RunRecord]:
+        token = str(run_data.get("context_id", ""))
+        job_dir = registry.get(token)
+        output_root = (job_dir / "output").resolve()
+        requested = Path(str(run_data.get("output_dir", ""))).expanduser().resolve()
+        if requested.parent != output_root:
+            raise DashboardDataError("입력 context 밖의 결과입니다.")
+        return job_dir, load_run_directory(requested)
+
     @app.callback(
-        Output("jobs-root-store", "data"),
-        Output("jobs-root-input", "value"),
-        Output("jobs-root-message", "children"),
-        Output("jobs-root-message", "className"),
-        Output("root-path", "children"),
-        Output("input-job-dir", "value"),
-        Input("jobs-root-apply", "n_clicks"),
-        State("jobs-root-input", "value"),
+        Output("job-dir-input", "value"),
+        Output("folder-message", "children"),
+        Input("browse-button", "n_clicks"),
+        State("job-dir-input", "value"),
         prevent_initial_call=True,
     )
-    def apply_jobs_root(
+    def browse_folder(n_clicks: int | None, current: str | None) -> tuple[Any, str]:
+        if not n_clicks:
+            return no_update, ""
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "waam_validator.dashboard.folder_picker", current or ""],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return no_update, f"폴더 창을 열 수 없습니다. 경로를 직접 입력하세요: {exc}"
+        selected = completed.stdout.strip()
+        if not selected:
+            return no_update, "폴더 선택을 취소했습니다."
+        return selected, "폴더를 선택했습니다. 입력 확인을 실행하세요."
+
+    @app.callback(
+        Output("selected-job-dir-store", "data"),
+        Input("job-dir-input", "value"),
+    )
+    def remember_job_directory(value: str | None) -> Any:
+        # Some browsers restore the visible input before Dash has populated the
+        # component's callback State. Preserve the CLI-provided initial path
+        # until a real input value arrives.
+        return no_update if value is None else value
+
+    @app.callback(
+        Output("active-input-store", "data"),
+        Output("recent-run-store", "data"),
+        Output("inspection-content", "children"),
+        Output("input-gantt", "figure"),
+        Output("input-scene", "figure"),
+        Output("input-time-chart", "figure"),
+        Output("input-motion-chart", "figure"),
+        Output("input-reach-chart", "figure"),
+        Output("preview-note", "children"),
+        Input("inspect-button", "n_clicks"),
+        State("job-dir-input", "value"),
+        State("selected-job-dir-store", "data"),
+        prevent_initial_call=True,
+    )
+    def inspect_input(
         n_clicks: int | None,
         value: str | None,
-    ) -> tuple[Any, str, str, str, Any, Any]:
-        active_root = current_root()
+        remembered_value: str | None,
+    ) -> tuple[Any, ...]:
         if not n_clicks:
-            return no_update, str(active_root), "", "", no_update, no_update
-        if manager.snapshot().get("running") or replay_manager.snapshot().get("running"):
+            # Dynamic screen updates can re-register this callback with a null
+            # click count. Never let that initialization erase a valid result.
+            raise PreventUpdate
+        if value is None:
+            value = remembered_value
+        if not value:
+            empty = _empty_figure("입력 폴더를 지정하세요.")
             return (
-                no_update,
-                str(active_root),
-                "실행 중에는 JOBS_ROOT를 변경할 수 없습니다.",
-                "is-error",
-                no_update,
-                no_update,
+                {},
+                {},
+                html.Div("입력 폴더를 지정하세요."),
+                empty,
+                empty,
+                empty,
+                empty,
+                empty,
+                "",
             )
         try:
-            if value is None or not value.strip():
-                raise DashboardDataError("JOBS_ROOT 경로를 입력하세요.")
-            candidate = Path(_display_path(value)).expanduser().resolve()
-            if not candidate.is_dir():
-                raise DashboardDataError(f"JOBS_ROOT가 존재하지 않습니다: {candidate}")
-            discover_jobs(candidate)
-        except (DashboardDataError, OSError) as exc:
-            return (
-                no_update,
-                str(active_root),
-                str(exc),
-                "is-error",
-                no_update,
-                no_update,
-            )
-        set_current_root(candidate)
-        return (
-            {"path": str(candidate), "nonce": time.time_ns()},
-            str(candidate),
-            "JOBS_ROOT를 적용했습니다.",
-            "is-ready",
-            str(candidate),
-            "",
-        )
-
-    @app.callback(
-        Output("jobs-root-apply", "disabled"),
-        Input("runtime-store", "data"),
-        Input("replay-runtime-store", "data"),
-    )
-    def jobs_root_button_state(
-        runtime: JsonDict | None,
-        replay_runtime: JsonDict | None,
-    ) -> bool:
-        return bool((runtime or {}).get("running")) or bool((replay_runtime or {}).get("running"))
-
-    @app.callback(
-        Output("job-select", "options"),
-        Output("job-select", "value"),
-        Input("jobs-root-store", "data"),
-        Input("job-use-request", "data"),
-        State("job-select", "value"),
-    )
-    def refresh_job_options(
-        _root_data: JsonDict,
-        request: JsonDict | None,
-        selected: str | None,
-    ) -> tuple[list[JsonDict], str | None]:
-        jobs_now = discover_jobs(current_root())
-        options: list[JsonDict] = [{"label": job.name, "value": job.name} for job in jobs_now]
-        requested_path = (request or {}).get("job_dir")
-        if isinstance(requested_path, str):
-            requested = next(
-                (job.name for job in jobs_now if str(job.path) == requested_path),
-                None,
-            )
-            if requested is not None:
-                return options, requested
-        if selected is not None and any(job.name == selected for job in jobs_now):
-            return options, selected
-        return options, jobs_now[0].name if jobs_now else None
-
-    @app.callback(
-        Output("input-config-path", "value"),
-        Output("input-trajectory-path", "value"),
-        Output("input-target-path", "value"),
-        Input("input-job-dir", "value"),
-        prevent_initial_call=True,
-    )
-    def fill_input_paths(job_dir: str | None) -> tuple[str, str, str]:
-        if not job_dir or not job_dir.strip():
-            return "", "", ""
-        directory = Path(_display_path(job_dir)).expanduser().resolve()
-        return (
-            str(directory / "config.yaml"),
-            str(directory / "trajectory.csv"),
-            str(directory / "target.stl"),
-        )
-
-    @app.callback(
-        Output("input-inspection-store", "data"),
-        Output("input-inspection-content", "children"),
-        Output("job-use-request", "data"),
-        Input("input-check-button", "n_clicks"),
-        State("input-job-dir", "value"),
-        State("input-config-path", "value"),
-        State("input-trajectory-path", "value"),
-        State("input-target-path", "value"),
-        prevent_initial_call=True,
-    )
-    def inspect_inputs(
-        n_clicks: int | None,
-        job_dir: str | None,
-        config_path: str | None,
-        trajectory_path: str | None,
-        target_path: str | None,
-    ) -> tuple[JsonDict, Any, JsonDict]:
-        if not n_clicks or not job_dir:
-            return {}, _input_error_content("작업 폴더를 입력하세요."), {}
-        try:
-            paths = resolve_dashboard_inputs(
-                current_root(),
-                job_dir,
-                config_path,
-                trajectory_path,
-                target_path,
-            )
-            inspection = inspect_dashboard_inputs(paths).to_dict()
-            request = (
-                {"job_dir": str(paths.job_dir), "nonce": time.time_ns()}
-                if inspection.get("can_run")
-                else {}
-            )
-            return inspection, _inspection_content(inspection), request
-        except (DashboardDataError, OSError, ValueError) as exc:
-            payload: JsonDict = {
-                "status": "BLOCKED",
-                "can_run": False,
-                "blocking_errors": [{"code": "DASHBOARD_INPUT_ERROR", "message": str(exc)}],
-            }
-            return payload, _input_error_content(str(exc)), {}
-
-    @app.callback(
-        Output("input-readiness-message", "children"),
-        Output("input-readiness-message", "className"),
-        Input("input-inspection-store", "data"),
-        Input("input-job-dir", "value"),
-        Input("input-config-path", "value"),
-        Input("input-trajectory-path", "value"),
-        Input("input-target-path", "value"),
-        Input("jobs-root-store", "data"),
-    )
-    def enable_inspected_job(
-        inspection: JsonDict | None,
-        job_dir: str | None,
-        config_path: str | None,
-        trajectory_path: str | None,
-        target_path: str | None,
-        _root_data: JsonDict,
-    ) -> tuple[str, str]:
-        if not inspection or not job_dir:
-            return "입력 확인이 완료되면 이 작업이 자동 선택됩니다.", "is-idle"
-        if not inspection.get("can_run"):
-            return "차단 오류를 수정하고 입력 확인을 다시 실행하세요.", "is-error"
-        try:
-            paths = resolve_dashboard_inputs(
-                current_root(),
-                job_dir,
-                config_path,
-                trajectory_path,
-                target_path,
-            )
-            if not inspection_is_current(inspection, paths):
+            paths = resolve_input_directory(value)
+            inspection, config, trajectories, mesh = inspect_dashboard_input_bundle(paths)
+            if config is None or trajectories is None or mesh is None:
+                empty = _empty_figure("차단 오류를 수정한 뒤 다시 확인하세요.")
                 return (
-                    "경로나 파일이 변경되었습니다. 입력 확인을 다시 실행하세요.",
-                    "is-error",
+                    inspection.to_dict(),
+                    {},
+                    _inspection_content(inspection.to_dict()),
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    empty,
+                    "Preview를 생성할 수 없습니다.",
                 )
+            preview = build_input_preview(config, trajectories, mesh)
+            token = registry.add(paths.job_dir, trajectories)
+            active = {
+                **inspection.to_dict(),
+                "context_id": token,
+                "recent_result_note": (f"완료된 schema {RESULT_SCHEMA_VERSION} 결과가 없습니다."),
+            }
+            recent_data: JsonDict = {}
+            preview_note = _preview_note(preview)
+            recent = load_latest_matching_run(paths.job_dir)
+            if recent is not None:
+                matches, match_note = verify_validation_inputs(paths.job_dir, recent.directory)
+                if matches:
+                    recent_data = {
+                        "context_id": token,
+                        "job_dir": str(paths.job_dir),
+                        "output_dir": str(recent.directory),
+                        "run_name": recent.run_name,
+                        "status": recent.status,
+                    }
+                    if match_note:
+                        preview_note += f" · {match_note}"
+                    active["recent_result_note"] = "현재 입력과 일치하는 최근 결과가 있습니다."
+            else:
+                latest = load_latest_run(paths.job_dir)
+                if (
+                    latest is not None
+                    and latest.payload.get("schema_version") != RESULT_SCHEMA_VERSION
+                ):
+                    active["recent_result_note"] = (
+                        f"완료 결과가 있지만 현재 schema {RESULT_SCHEMA_VERSION} 형식이 "
+                        "아니어서 다시 실행해야 합니다."
+                    )
+                    preview_note += (
+                        f" · 기존 결과는 현재 결과 형식(schema {RESULT_SCHEMA_VERSION})이 "
+                        "아니므로 "
+                        "Validation을 다시 실행해야 합니다."
+                    )
+                elif latest is not None:
+                    _, match_note = verify_validation_inputs(paths.job_dir, latest.directory)
+                    active["recent_result_note"] = match_note
             return (
-                f"입력 확인 완료 · {paths.job_dir.name} 작업이 자동 선택되었습니다.",
-                "is-ready",
+                active,
+                recent_data,
+                _inspection_content(active),
+                preview.gantt_figure,
+                preview.scene,
+                preview.time_figure,
+                preview.motion_figure,
+                preview.reach_figure,
+                preview_note,
             )
         except (DashboardDataError, OSError, ValueError) as exc:
-            return str(exc), "is-error"
+            empty = _empty_figure("입력 확인에 실패했습니다.")
+            content = html.Div(
+                [html.Strong("입력 확인 실패"), html.P(str(exc))],
+                className="input-verdict is-blocked",
+            )
+            return {}, {}, content, empty, empty, empty, empty, empty, ""
+
+    @app.callback(
+        Output("input-gantt", "figure", allow_duplicate=True),
+        Input("input-gantt", "relayoutData"),
+        State("active-input-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_gantt_detail(
+        relayout: JsonDict | None,
+        active: JsonDict | None,
+    ) -> Any:
+        if not relayout or not active:
+            raise PreventUpdate
+        range_value = relayout.get("xaxis.range")
+        if isinstance(range_value, list) and len(range_value) == 2:
+            start_raw, end_raw = range_value
+        else:
+            start_raw = relayout.get("xaxis.range[0]")
+            end_raw = relayout.get("xaxis.range[1]")
+        if not isinstance(start_raw, int | float) or not isinstance(end_raw, int | float):
+            raise PreventUpdate
+        token = str(active.get("context_id", ""))
+        return build_gantt_figure(
+            registry.trajectories(token),
+            start_s=float(start_raw),
+            end_s=float(end_raw),
+        )
+
+    @app.callback(
+        Output("validation-button", "disabled"),
+        Output("validation-readiness", "children"),
+        Output("recent-result-button", "disabled"),
+        Output("recent-result-readiness", "children"),
+        Input("active-input-store", "data"),
+        Input("recent-run-store", "data"),
+        Input("job-dir-input", "value"),
+        Input("selected-job-dir-store", "data"),
+        Input("runtime-store", "data"),
+    )
+    def input_action_state(
+        active: JsonDict | None,
+        recent: JsonDict | None,
+        value: str | None,
+        remembered_value: str | None,
+        runtime: JsonDict | None,
+    ) -> tuple[bool, str, bool, str]:
+        if (runtime or {}).get("running"):
+            return True, "Validation 실행 중", True, "실행이 끝나면 최근 결과가 갱신됩니다."
+        if not active or not active.get("can_run"):
+            return (
+                True,
+                "입력 확인을 완료해야 Validation을 실행할 수 있습니다.",
+                True,
+                "입력 확인 후 현재 입력과 일치하는 결과를 찾습니다.",
+            )
+        if value is None:
+            value = remembered_value
+        try:
+            current_path = str(Path(value or "").expanduser().resolve())
+        except OSError:
+            current_path = ""
+        inspected_path = str((active.get("paths") or {}).get("job_dir", ""))
+        if current_path != inspected_path:
+            return (
+                True,
+                "폴더가 변경되었습니다. 입력 확인을 다시 실행하세요.",
+                True,
+                "변경된 폴더의 입력 확인이 필요합니다.",
+            )
+        status = str(active.get("status", "READY"))
+        recent_note = str(
+            active.get("recent_result_note") or "현재 입력과 일치하는 최근 결과가 없습니다."
+        )
+        return False, f"Validation 준비 완료 · 입력 상태 {status}", not bool(recent), recent_note
+
+    @app.callback(
+        Output("view-store", "data"),
+        Input("recent-result-button", "n_clicks"),
+        Input("new-input-button", "n_clicks"),
+        State("recent-run-store", "data"),
+        prevent_initial_call=True,
+    )
+    def navigate(
+        recent_clicks: int | None,
+        new_clicks: int | None,
+        recent: JsonDict | None,
+    ) -> Any:
+        if ctx.triggered_id == "recent-result-button" and recent_clicks and recent:
+            return {"view": "result", "source": "recent", "nonce": time.time_ns()}
+        if ctx.triggered_id == "new-input-button" and new_clicks:
+            return {"view": "input", "nonce": time.time_ns()}
+        return no_update
+
+    @app.callback(
+        Output("current-run-store", "data", allow_duplicate=True),
+        Input("recent-run-store", "data"),
+        Input("view-store", "data"),
+        prevent_initial_call=True,
+    )
+    def select_recent_run(recent: JsonDict | None, view: JsonDict | None) -> Any:
+        if (view or {}).get("source") == "recent" and recent:
+            return recent
+        return no_update
 
     @app.callback(
         Output("runtime-store", "data"),
-        Output("run-banner", "children"),
-        Output("run-banner", "className"),
-        Output("live-log", "children"),
-        Output("live-log", "className"),
         Output("validation-poller", "disabled"),
-        Output("result-refresh", "data"),
-        Input("run-button", "n_clicks"),
+        Output("view-store", "data", allow_duplicate=True),
+        Output("current-run-store", "data", allow_duplicate=True),
+        Output("recent-run-store", "data", allow_duplicate=True),
+        Output("overall-progress", "value"),
+        Output("overall-progress-label", "children"),
+        Output("stage-progress-label", "children"),
+        Output("progress-stage", "children"),
+        Output("progress-units", "children"),
+        Output("progress-elapsed", "children"),
+        Output("progress-eta", "children"),
+        Output("progress-message", "children"),
+        Output("progress-log", "children"),
+        Output("progress-title", "children"),
+        Output("progress-output", "children"),
+        Output("validation-start-message", "children"),
+        Input("validation-button", "n_clicks"),
         Input("validation-poller", "n_intervals"),
-        State("job-select", "value"),
-        State("input-inspection-store", "data"),
-        State("input-job-dir", "value"),
-        State("input-config-path", "value"),
-        State("input-trajectory-path", "value"),
-        State("input-target-path", "value"),
+        State("active-input-store", "data"),
+        prevent_initial_call=True,
     )
     def manage_validation(
-        n_clicks: int | None,
-        _interval: int,
-        selected_job: str | None,
-        inspection: JsonDict | None,
-        input_job_dir: str | None,
-        input_config: str | None,
-        input_trajectory: str | None,
-        input_target: str | None,
+        validation_clicks: int | None,
+        _ticks: int,
+        active: JsonDict | None,
     ) -> tuple[Any, ...]:
-        if ctx.triggered_id == "run-button" and n_clicks:
+        triggered = ctx.triggered_id
+        if triggered == "validation-button" and validation_clicks:
             try:
+                if not active or not active.get("can_run"):
+                    raise DashboardDataError("입력 확인을 다시 실행하세요.")
+                token = str(active.get("context_id", ""))
+                job_dir = registry.get(token)
+                paths = resolve_input_directory(job_dir)
+                if not inspection_is_current(active, paths):
+                    raise DashboardDataError(
+                        "입력 파일이 변경되었습니다. 입력 확인을 다시 실행하세요."
+                    )
                 if replay_manager.snapshot().get("running"):
-                    raise ValidationAlreadyRunningError(
-                        "Replay 생성이 끝난 뒤 Validation을 실행하세요."
-                    )
-                job = resolve_job(current_root(), selected_job or "")
-                inspected_paths = inspection.get("paths", {}) if inspection else {}
-                if isinstance(inspected_paths, dict) and inspected_paths.get("job_dir") == str(
-                    job.path
-                ):
-                    paths = resolve_dashboard_inputs(
-                        current_root(),
-                        input_job_dir or job.path,
-                        input_config,
-                        input_trajectory,
-                        input_target,
-                    )
-                    if not inspection_is_current(inspection or {}, paths):
-                        raise DashboardDataError(
-                            "입력 파일이 변경되었습니다. 입력 확인을 다시 실행하세요."
-                        )
-                manager.start(job)
-            except (DashboardDataError, ValidationAlreadyRunningError, OSError) as exc:
+                    raise ValidationAlreadyRunningError("추가 산출물 생성이 끝난 뒤 실행하세요.")
+                manager.start(JobRecord(job_dir.name, job_dir))
+            except (
+                DashboardDataError,
+                ValidationAlreadyRunningError,
+                OSError,
+                RuntimeError,
+            ) as exc:
+                error = {"state": "ERROR", "running": False, "message": str(exc)}
                 return (
-                    {"state": "ERROR", "running": False, "message": str(exc)},
-                    [html.Span("ERROR", className="run-state"), html.Strong(str(exc))],
-                    "run-banner is-error",
-                    "",
-                    "live-log is-hidden",
+                    error,
                     True,
+                    {"view": "input"},
                     no_update,
+                    no_update,
+                    0,
+                    "0%",
+                    "0%",
+                    "시작 실패",
+                    "—",
+                    "0.0 s",
+                    "—",
+                    str(exc),
+                    "",
+                    "Validation을 시작하지 못했습니다",
+                    "",
+                    f"Validation 시작 실패: {exc}",
                 )
         snapshot = manager.snapshot()
         running = bool(snapshot.get("running"))
-        if running or snapshot.get("state") == "FINISHED":
-            stage = str(snapshot.get("stage", "starting"))
-            label = _STAGE_LABELS.get(stage, stage)
-            elapsed = float(snapshot.get("elapsed_s", 0.0) or 0.0)
-            verdict = str(snapshot.get("verdict", ""))
-            message = str(snapshot.get("message", ""))
-            banner = [
-                html.Span("RUNNING" if running else verdict or "FINISHED", className="run-state"),
-                html.Strong(f"{snapshot.get('job_name', '')} · {label}"),
-                html.Span(f"{elapsed:,.1f} s · {message}", className="run-message"),
-            ]
-            tone = "running" if running else verdict.lower() or "finished"
-            log = str(snapshot.get("log", ""))
-            return (
-                snapshot,
-                banner,
-                f"run-banner is-{tone}",
-                log,
-                "live-log" if log else "live-log is-hidden",
-                not running,
-                no_update
-                if running
-                else {"job_name": snapshot.get("job_name"), "nonce": time.time_ns()},
-            )
+        overall = min(1.0, max(0.0, float(snapshot.get("overall_progress", 0.0) or 0.0)))
+        stage_fraction = min(1.0, max(0.0, float(snapshot.get("stage_progress", 0.0) or 0.0)))
+        elapsed = float(snapshot.get("elapsed_s", 0.0) or 0.0)
+        eta = elapsed * (1.0 - overall) / overall if overall >= 0.02 and running else None
+        completed = snapshot.get("completed_units")
+        total = snapshot.get("total_units")
+        unit = str(snapshot.get("unit") or "")
+        units = (
+            f"{float(completed):,.0f} / {float(total):,.0f} {unit}"
+            if isinstance(completed, int | float) and isinstance(total, int | float)
+            else "—"
+        )
+        run_data: Any = no_update
+        recent_data: Any = no_update
+        view = {"view": "running", "nonce": time.time_ns()}
+        if not running and snapshot.get("state") == "FINISHED":
+            output_dir = Path(str(snapshot.get("output_directory", ""))).resolve()
+            token = str((active or {}).get("context_id", ""))
+            run_data = {
+                "context_id": token,
+                "job_dir": str(registry.get(token)),
+                "output_dir": str(output_dir),
+                "run_name": output_dir.name,
+                "status": str(snapshot.get("verdict", "ERROR")),
+            }
+            recent_data = run_data
+            view = {"view": "result", "nonce": time.time_ns()}
+        stage = str(snapshot.get("stage", "starting"))
         return (
             snapshot,
-            html.Span("Validation을 실행하거나 최신 결과를 검토하세요."),
-            "run-banner is-idle",
-            "",
-            "live-log is-hidden",
-            True,
-            no_update,
+            not running,
+            view,
+            run_data,
+            recent_data,
+            overall * 100.0,
+            f"{overall:.0%}",
+            f"{stage_fraction:.0%}",
+            _STAGE_LABELS.get(stage, stage),
+            units,
+            f"{elapsed:,.1f} s",
+            f"약 {eta:,.0f} s" if eta is not None else "계산 중",
+            str(snapshot.get("message", "")),
+            str(snapshot.get("log", "")),
+            f"{snapshot.get('job_name', '')} Validation",
+            str(snapshot.get("output_directory", "")),
+            (
+                "Validation을 시작했습니다. 진행 화면으로 이동합니다."
+                if triggered == "validation-button"
+                else no_update
+            ),
         )
 
     @app.callback(
-        Output("run-button", "disabled"),
-        Output("run-button", "children"),
-        Output("run-button-hint", "children"),
-        Output("run-button-hint", "className"),
-        Input("job-select", "value"),
-        Input("runtime-store", "data"),
+        Output("input-screen", "className"),
+        Output("progress-screen", "className"),
+        Output("result-screen", "className"),
+        Output("workflow-steps", "className"),
+        Input("view-store", "data"),
+    )
+    def switch_screen(view_data: JsonDict | None) -> tuple[str, str, str, str]:
+        view = str((view_data or {}).get("view", "input"))
+        return (
+            "validator-screen" + ("" if view == "input" else " is-hidden"),
+            "validator-screen" + ("" if view == "running" else " is-hidden"),
+            "validator-screen" + ("" if view == "result" else " is-hidden"),
+            f"workflow-steps step-{view}",
+        )
+
+    @app.callback(
+        Output("result-content", "children"),
+        Input("current-run-store", "data"),
+        Input("replay-refresh", "data"),
+        State("result-tab-store", "data"),
+    )
+    def render_result(
+        run_data: JsonDict | None,
+        _refresh: JsonDict | None,
+        tab_data: JsonDict | None = None,
+    ) -> Any:
+        if not run_data:
+            return html.Div("표시할 결과가 없습니다.", className="empty-state")
+        try:
+            token = str(run_data.get("context_id", ""))
+            job_dir, run = context_run(run_data)
+            selected_tab = "overview"
+            if (tab_data or {}).get("run_name") == run.run_name:
+                selected_tab = str((tab_data or {}).get("value", "overview"))
+            return _result_view(
+                token,
+                JobRecord(job_dir.name, job_dir),
+                run,
+                selected_tab,
+            )
+        except (DashboardDataError, OSError, ValueError) as exc:
+            return html.Div(
+                [html.Strong("결과 로딩 실패"), html.P(str(exc))],
+                className="input-verdict is-blocked",
+            )
+
+    @app.callback(
+        Output("result-tab-store", "data"),
+        Input("result-tabs", "value"),
+        State("current-run-store", "data"),
+        prevent_initial_call=True,
+    )
+    def remember_result_tab(
+        value: str | None,
+        run_data: JsonDict | None,
+    ) -> JsonDict:
+        if value not in {"overview", "robots", "collision", "shape", "artifacts"} or not run_data:
+            raise PreventUpdate
+        return {"run_name": str(run_data.get("run_name", "")), "value": value}
+
+    def result_csv_window(
+        run_data: JsonDict | None,
+        filename: str,
+        request: JsonDict | None,
+    ) -> JsonDict:
+        if not run_data:
+            return {"rowData": [], "rowCount": 0}
+        try:
+            _, run = context_run(run_data)
+            request_data = request or {}
+            start = max(0, int(request_data.get("startRow", 0) or 0))
+            end = max(start + 1, int(request_data.get("endRow", start + 20) or start + 20))
+            sort_model = request_data.get("sortModel", [])
+            sort_by = (
+                [
+                    {
+                        "column_id": str(item.get("colId", "")),
+                        "direction": str(item.get("sort", "asc")),
+                    }
+                    for item in sort_model
+                    if isinstance(item, dict)
+                ]
+                if isinstance(sort_model, list)
+                else []
+            )
+            rows, row_count = read_csv_window(
+                run.directory,
+                filename,
+                start=start,
+                end=end,
+                sort_by=sort_by,
+            )
+            if filename == "collision_events.csv":
+                rows = _collision_display_rows(rows)
+            elif filename == "layer_metrics.csv":
+                rows = _layer_display_rows(rows)
+            return {"rowData": rows, "rowCount": row_count}
+        except (DashboardDataError, OSError, ValueError):
+            return {"rowData": [], "rowCount": 0}
+
+    @app.callback(
+        Output("collision-table", "getRowsResponse"),
+        Input("collision-table", "getRowsRequest"),
+        State("current-run-store", "data"),
+        prevent_initial_call=True,
+    )
+    def collision_table_page(
+        request: JsonDict | None,
+        run_data: JsonDict | None,
+    ) -> JsonDict:
+        return result_csv_window(run_data, "collision_events.csv", request)
+
+    @app.callback(
+        Output("layer-table", "getRowsResponse"),
+        Input("layer-table", "getRowsRequest"),
+        State("current-run-store", "data"),
+        prevent_initial_call=True,
+    )
+    def layer_table_page(
+        request: JsonDict | None,
+        run_data: JsonDict | None,
+    ) -> JsonDict:
+        return result_csv_window(run_data, "layer_metrics.csv", request)
+
+    @app.callback(
+        Output("replay-estimate", "children"),
+        Input("replay-interval", "value"),
+        State("current-run-store", "data"),
+        prevent_initial_call=True,
+    )
+    def replay_estimate(interval: float | None, run_data: JsonDict | None) -> str:
+        if interval is None or not run_data:
+            return "프레임 간격을 입력하세요."
+        try:
+            job_dir, run = context_run(run_data)
+            return _replay_estimate_text(JobRecord(job_dir.name, job_dir), run, float(interval))
+        except (DashboardDataError, OSError, ValueError) as exc:
+            return str(exc)
+
+    @app.callback(
+        Output("replay-generate-button", "disabled"),
+        Output("stl-generate-button", "disabled"),
         Input("replay-runtime-store", "data"),
     )
-    def validation_button_state(
-        job_name: str | None,
-        runtime: JsonDict | None,
-        replay_runtime: JsonDict | None,
-    ) -> tuple[bool, str, str, str]:
+    def derived_artifact_buttons(runtime: JsonDict | None) -> tuple[bool, bool]:
         running = bool((runtime or {}).get("running"))
-        replay_running = bool((replay_runtime or {}).get("running"))
-        if job_name is None:
-            return (
-                True,
-                "Validation 실행",
-                "입력 확인을 완료하면 실행할 작업이 자동 선택됩니다.",
-                "is-error",
-            )
-        if running:
-            return True, "Validation 실행 중…", f"{job_name} 작업 처리 중", "is-running"
-        if replay_running:
-            return True, "Validation 실행", "Replay 생성이 끝난 뒤 실행할 수 있습니다.", "is-idle"
-        if (runtime or {}).get("state") == "ERROR":
-            message = str((runtime or {}).get("message", "실행을 시작하지 못했습니다."))
-            return False, "Validation 다시 실행", f"실행 실패: {message}", "is-error"
-        return (
-            False,
-            "Validation 실행",
-            f"선택된 작업: {job_name}",
-            "is-ready",
-        )
-
-    @app.callback(
-        Output("replay-interval", "value"),
-        Output("replay-interval", "disabled"),
-        Input("replay-preset", "value"),
-        Input("job-select", "value"),
-        Input("result-refresh", "data"),
-        State("replay-interval", "value"),
-    )
-    def select_replay_interval(
-        preset: str,
-        job_name: str | None,
-        _refresh: JsonDict,
-        current: float | None,
-    ) -> tuple[Any, bool]:
-        if preset == "custom":
-            return current if current is not None else 1.0, False
-        job = find_job(job_name)
-        run = load_latest_run(job.path) if job is not None else None
-        if run is None:
-            return 1.0, True
-        schedule = _section(run.payload, "schedule")
-        makespan = schedule.get("makespan_s")
-        if not isinstance(makespan, int | float):
-            return 1.0, True
-        return preset_interval_s(float(makespan), preset), True
+        return running, running
 
     @app.callback(
         Output("replay-runtime-store", "data"),
-        Output("replay-status", "children"),
-        Output("replay-status", "className"),
-        Output("replay-progress", "value"),
         Output("replay-poller", "disabled"),
+        Output("replay-status", "children"),
+        Output("replay-progress", "value"),
+        Output("stl-status", "children"),
+        Output("stl-progress", "value"),
         Output("replay-refresh", "data"),
         Input("replay-generate-button", "n_clicks"),
-        Input("replay-cancel-button", "n_clicks"),
+        Input("stl-generate-button", "n_clicks"),
         Input("replay-poller", "n_intervals"),
-        State("job-select", "value"),
         State("replay-interval", "value"),
+        State("current-run-store", "data"),
+        prevent_initial_call=True,
     )
     def manage_replay(
-        generate_clicks: int | None,
-        cancel_clicks: int | None,
-        _interval: int,
-        job_name: str | None,
-        interval_s: float | None,
+        clicks: int | None,
+        stl_clicks: int | None,
+        _ticks: int,
+        interval: float | None,
+        run_data: JsonDict | None,
     ) -> tuple[Any, ...]:
-        if ctx.triggered_id == "replay-cancel-button" and cancel_clicks:
-            if not replay_manager.cancel():
-                return (
-                    {"state": "ERROR", "running": False},
-                    "취소할 Replay가 없습니다.",
-                    "replay-status is-error",
-                    0,
-                    True,
-                    no_update,
-                )
-        elif ctx.triggered_id == "replay-generate-button" and generate_clicks:
+        triggered = ctx.triggered_id
+        if triggered in {"replay-generate-button", "stl-generate-button"}:
             try:
                 if manager.snapshot().get("running"):
-                    raise ReplayAlreadyRunningError("Validation이 끝난 뒤 Replay를 생성하세요.")
-                if job_name is None or interval_s is None:
-                    raise DashboardDataError("작업과 프레임 간격을 선택하세요.")
-                job = resolve_job(current_root(), job_name)
-                run = load_latest_run(job.path)
-                if run is None or run.status == "ERROR":
-                    raise DashboardDataError(
-                        "완료된 PASS/FAIL 결과가 있어야 Replay를 생성할 수 있습니다."
+                    raise ReplayAlreadyRunningError("Validation이 끝난 뒤 산출물을 생성하세요.")
+                if not run_data:
+                    raise DashboardDataError("결과를 확인하세요.")
+                job_dir, run = context_run(run_data)
+                job = JobRecord(job_dir.name, job_dir)
+                if triggered == "replay-generate-button" and clicks:
+                    if interval is None:
+                        raise DashboardDataError("프레임 간격을 확인하세요.")
+                    estimate = estimate_replay(job, run, float(interval))
+                    if not estimate.allowed:
+                        raise DashboardDataError(estimate.warning)
+                    replay_manager.start(job, run, float(interval))
+                elif triggered == "stl-generate-button" and stl_clicks:
+                    replay_manager.start_deposited_stl(job, run)
+                else:
+                    raise PreventUpdate
+            except (DashboardDataError, ReplayAlreadyRunningError, OSError, ValueError) as exc:
+                if triggered == "stl-generate-button":
+                    return (
+                        {"state": "ERROR", "running": False},
+                        True,
+                        no_update,
+                        no_update,
+                        str(exc),
+                        0,
+                        no_update,
                     )
-                estimate = estimate_replay(job, run, float(interval_s))
-                if not estimate.allowed:
-                    raise DashboardDataError(estimate.warning)
-                replay_manager.start(job, run, float(interval_s))
-            except (
-                DashboardDataError,
-                ReplayAlreadyRunningError,
-                OSError,
-                ValueError,
-            ) as exc:
                 return (
-                    {"state": "ERROR", "running": False, "message": str(exc)},
-                    str(exc),
-                    "replay-status is-error",
-                    0,
+                    {"state": "ERROR", "running": False},
                     True,
+                    str(exc),
+                    0,
+                    no_update,
+                    no_update,
                     no_update,
                 )
         snapshot = replay_manager.snapshot()
         running = bool(snapshot.get("running"))
-        if running or snapshot.get("state") == "FINISHED":
-            progress = float(snapshot.get("progress", 0.0) or 0.0)
-            elapsed = float(snapshot.get("elapsed_s", 0.0) or 0.0)
-            verdict = str(snapshot.get("verdict", "RUNNING" if running else "FINISHED"))
-            content = [
-                html.Strong(verdict),
-                html.Span(
-                    f"{snapshot.get('job_name', '')} · {elapsed:,.1f}초 · "
-                    f"{snapshot.get('message', '')}"
-                ),
-            ]
-            tone = "running" if running else verdict.lower()
-            return (
-                snapshot,
-                content,
-                f"replay-status is-{tone}",
-                min(1.0, max(0.0, progress)),
-                not running,
-                no_update
-                if running
-                else {"job_name": snapshot.get("job_name"), "nonce": time.time_ns()},
-            )
+        progress = min(1.0, max(0.0, float(snapshot.get("progress", 0.0) or 0.0)))
+        is_stl = snapshot.get("artifact_kind") == "deposited_stl"
+        message = str(snapshot.get("message", ""))
         return (
             snapshot,
-            "Replay를 생성하지 않은 상태입니다.",
-            "replay-status is-idle",
-            0,
-            True,
-            no_update,
-        )
-
-    @app.callback(
-        Output("replay-generate-button", "disabled"),
-        Output("replay-cancel-button", "disabled"),
-        Output("replay-generate-button", "children"),
-        Input("job-select", "value"),
-        Input("replay-interval", "value"),
-        Input("runtime-store", "data"),
-        Input("replay-runtime-store", "data"),
-        Input("result-refresh", "data"),
-    )
-    def replay_button_state(
-        job_name: str | None,
-        interval_s: float | None,
-        runtime: JsonDict | None,
-        replay_runtime: JsonDict | None,
-        _refresh: JsonDict,
-    ) -> tuple[bool, bool, str]:
-        running = bool((replay_runtime or {}).get("running"))
-        validation_running = bool((runtime or {}).get("running"))
-        job = find_job(job_name)
-        run = load_latest_run(job.path) if job is not None else None
-        allowed = False
-        if job is not None and run is not None and run.status != "ERROR" and interval_s is not None:
-            try:
-                allowed = estimate_replay(job, run, float(interval_s)).allowed
-            except (OSError, ValueError):
-                allowed = False
-        return (
-            running or validation_running or not allowed,
             not running,
-            "Replay 생성 중…" if running else "Replay 다시 생성" if run else "Replay 생성",
-        )
-
-    @app.callback(
-        Output("replay-estimate", "children"),
-        Input("job-select", "value"),
-        Input("replay-interval", "value"),
-        Input("replay-refresh", "data"),
-    )
-    def render_replay_estimate(
-        job_name: str | None,
-        interval_s: float | None,
-        _refresh: JsonDict,
-    ) -> Any:
-        job = find_job(job_name)
-        run = load_latest_run(job.path) if job is not None else None
-        if job is None or run is None or interval_s is None:
-            return html.Div("완료된 Validation 결과가 필요합니다.", className="empty-state")
-        estimate = estimate_replay(job, run, float(interval_s))
-        cards = [
-            _metric_card("예상 프레임", f"약 {estimate.frame_count:,}개"),
-            _metric_card(
-                "예상 생성 시간",
-                _duration_range(estimate.time_low_s, estimate.time_high_s),
-                "첫 생성은 보수적 추정",
-            ),
-            _metric_card(
-                "예상 용량",
-                _size_range(estimate.size_low_bytes, estimate.size_high_bytes),
-                "Self-contained HTML",
-            ),
-        ]
-        manifest = read_replay_manifest(run.directory)
-        details: list[Any] = []
-        if estimate.warning:
-            details.append(
-                html.P(
-                    estimate.warning,
-                    className="estimate-warning" if estimate.allowed else "estimate-error",
-                )
-            )
-        if manifest is not None:
-            duration = manifest.get("duration_s")
-            size = manifest.get("size_bytes")
-            frames = manifest.get("frame_count")
-            if isinstance(duration, int | float) and isinstance(size, int | float):
-                details.append(
-                    html.P(
-                        f"최근 실측: {float(duration):.1f}초 · "
-                        f"{_file_size_value(int(size))} · {int(frames or 0):,}프레임",
-                        className="actual-replay-metric",
-                    )
-                )
-        return html.Div([html.Div(cards, className="replay-estimate-grid"), *details])
-
-    @app.callback(
-        Output("result-title", "children"),
-        Output("result-meta", "children"),
-        Output("status-pill", "children"),
-        Output("status-pill", "className"),
-        Output("metric-grid", "children"),
-        Output("result-summary", "children"),
-        Output("threshold-list", "children"),
-        Output("issues-list", "children"),
-        Output("robot-figure", "figure"),
-        Output("robot-table", "children"),
-        Output("collision-gauge", "figure"),
-        Output("collision-timeline", "figure"),
-        Output("shape-figure", "figure"),
-        Output("artifact-list", "children"),
-        Output("image-gallery", "children"),
-        Input("job-select", "value"),
-        Input("result-refresh", "data"),
-        Input("replay-refresh", "data"),
-    )
-    def render_result(
-        job_name: str | None,
-        _result_refresh: JsonDict,
-        _replay_refresh: JsonDict,
-    ) -> tuple[Any, ...]:
-        job = find_job(job_name)
-        run, payload, load_error = _status_result(job)
-        empty = _empty_figure("완료된 Validation 결과가 없습니다")
-        if job is None:
-            return (
-                "검증 가능한 작업이 없습니다",
-                "입력 파일 3개를 가진 작업 폴더를 추가하세요.",
-                "NO JOB",
-                "status-pill status-empty",
-                [],
-                html.Div("표시할 결과가 없습니다.", className="empty-state"),
-                [],
-                html.Div("표시할 경고가 없습니다.", className="empty-state"),
-                empty,
-                html.Div("표시할 지표가 없습니다.", className="empty-state"),
-                empty,
-                empty,
-                empty,
-                [],
-                [],
-            )
-        if run is None:
-            message = load_error or "아직 완료된 validation이 없습니다."
-            return (
-                job.name,
-                message,
-                "READY",
-                "status-pill status-ready",
-                [_metric_card("상태", "검증 전", "Validation 실행 버튼으로 시작")],
-                html.Div("최신 결과가 생성되면 판정 근거가 표시됩니다.", className="empty-state"),
-                _threshold_content(load_thresholds(job.path)),
-                html.Div("표시할 경고가 없습니다.", className="empty-state"),
-                empty,
-                html.Div("표시할 지표가 없습니다.", className="empty-state"),
-                empty,
-                empty,
-                empty,
-                [],
-                [],
-            )
-        makespan = _number(payload, "schedule", "makespan_s")
-        collisions = _number(payload, "collision", "collision_event_count")
-        min_tcp = _nested_number(payload, "collision", "tcp_radius", "minimum_distance_mm")
-        required_tcp = _nested_number(
-            payload, "collision", "tcp_radius", "required_distance_at_minimum_mm"
-        )
-        coverage = _number(payload, "shape", "coverage")
-        iou = _number(payload, "shape", "iou")
-        failed = _number(payload, "shape", "failed_layer_count")
-        evaluated = _number(payload, "shape", "evaluated_layer_count")
-        cards = [
-            _metric_card("Makespan", f"{makespan:,.1f} s" if makespan is not None else "—"),
-            _metric_card("충돌 이벤트", f"{int(collisions):,}" if collisions is not None else "—"),
-            _metric_card(
-                "최소 TCP 거리",
-                f"{min_tcp:,.2f} mm" if min_tcp is not None else "—",
-                f"요구 ≥ {required_tcp:,.2f} mm" if required_tcp is not None else "",
-            ),
-            _metric_card("Coverage", f"{coverage:.2%}" if coverage is not None else "—"),
-            _metric_card("IoU", f"{iou:.2%}" if iou is not None else "—"),
-            _metric_card(
-                "실패 Layer",
-                f"{int(failed)} / {int(evaluated)}"
-                if failed is not None and evaluated is not None
-                else "—",
-            ),
-        ]
-        thresholds = load_thresholds(job.path)
-        try:
-            robot_rows = read_csv_records(run.directory, "robot_metrics.csv")
-            collision_rows = read_csv_records(run.directory, "collision_events.csv")
-            layer_rows = read_csv_records(run.directory, "layer_metrics.csv")
-            issue_rows = read_csv_records(run.directory, "warnings.csv")
-        except DashboardDataError as exc:
-            robot_rows, collision_rows, layer_rows, issue_rows = [], [], [], []
-            load_error = str(exc)
-        issues = _issues_content(issue_rows, payload)
-        if load_error:
-            issues = html.Div(
-                [html.P(load_error, className="error-code"), issues], className="issue-list"
-            )
-        return (
-            job.name,
-            f"최신 완료 · {run.completed_label} · {run.run_name}",
-            run.status,
-            f"status-pill status-{run.status.lower()}",
-            cards,
-            _summary_content(run, payload),
-            _threshold_content(thresholds),
-            issues,
-            _robot_figure(robot_rows),
-            _robot_table(robot_rows),
-            _collision_gauge(payload),
-            _collision_timeline(collision_rows),
-            _shape_figure(layer_rows, thresholds),
-            _artifact_content(job, run),
-            _gallery_content(job, run),
-        )
-
-    @app.callback(
-        Output("collision-table", "data"),
-        Output("collision-table", "page_count"),
-        Input("job-select", "value"),
-        Input("result-refresh", "data"),
-        Input("collision-table", "page_current"),
-        Input("collision-table", "page_size"),
-        Input("collision-table", "sort_by"),
-        Input("collision-type-filter", "value"),
-        Input("collision-pair-filter", "value"),
-    )
-    def update_collision_table(
-        job_name: str | None,
-        _refresh: JsonDict,
-        page: int,
-        page_size: int,
-        sort_by: list[dict[str, str]] | None,
-        collision_type: str,
-        pair: str,
-    ) -> tuple[list[JsonDict], int]:
-        job = find_job(job_name)
-        if job is None:
-            return [], 1
-        run = load_latest_run(job.path)
-        if run is None:
-            return [], 1
-        equals: dict[str, object] = {"type": collision_type}
-        if pair != "ALL":
-            left, right = pair.split("-", maxsplit=1)
-            equals.update({"robot_a": int(left), "robot_b": int(right)})
-        try:
-            return read_csv_page(
-                run.directory,
-                "collision_events.csv",
-                page=page,
-                page_size=page_size,
-                sort_by=sort_by,
-                equals=equals,
-            )
-        except DashboardDataError:
-            return [], 1
-
-    @app.callback(
-        Output("layer-table", "data"),
-        Output("layer-table", "page_count"),
-        Input("job-select", "value"),
-        Input("result-refresh", "data"),
-        Input("layer-table", "page_current"),
-        Input("layer-table", "page_size"),
-        Input("layer-table", "sort_by"),
-        Input("failed-only", "value"),
-    )
-    def update_layer_table(
-        job_name: str | None,
-        _refresh: JsonDict,
-        page: int,
-        page_size: int,
-        sort_by: list[dict[str, str]] | None,
-        failed_only: list[str],
-    ) -> tuple[list[JsonDict], int]:
-        job = find_job(job_name)
-        if job is None:
-            return [], 1
-        run = load_latest_run(job.path)
-        if run is None:
-            return [], 1
-        equals: dict[str, object] = {"passed": False} if "failed" in failed_only else {}
-        try:
-            return read_csv_page(
-                run.directory,
-                "layer_metrics.csv",
-                page=page,
-                page_size=page_size,
-                sort_by=sort_by,
-                equals=equals,
-            )
-        except DashboardDataError:
-            return [], 1
-
-    @app.callback(
-        Output("replay-container", "children"),
-        Input("detail-tabs", "value"),
-        Input("job-select", "value"),
-        Input("result-refresh", "data"),
-        Input("replay-refresh", "data"),
-    )
-    def load_replay(
-        tab: str,
-        job_name: str | None,
-        _result_refresh: JsonDict,
-        _replay_refresh: JsonDict,
-    ) -> Any:
-        if tab != "artifacts":
-            return html.Div("3D 및 산출물 탭에서 필요할 때 불러옵니다.", className="empty-state")
-        job = find_job(job_name)
-        if job is None:
-            return html.Div("선택된 작업이 없습니다.", className="empty-state")
-        run = load_latest_run(job.path)
-        replay_runtime = replay_manager.snapshot()
-        if replay_runtime.get("running") and replay_runtime.get("job_name") == job.name:
-            return html.Div(
-                "Replay를 생성 중입니다. 완료되면 자동으로 표시됩니다.",
-                className="empty-state replay-empty",
-            )
-        if run is None or not (run.directory / "replay.html").is_file():
-            return html.Div(
-                [
-                    html.Strong("이 결과에는 replay가 없습니다."),
-                    html.P("위의 간격과 예상치를 확인한 뒤 Replay 생성 버튼을 누르세요."),
-                ],
-                className="empty-state replay-empty",
-            )
-        return html.Iframe(
-            src=_artifact_url(job, run, "replay.html"),
-            title=f"{job.name} 3D replay",
-            className="replay-frame",
+            no_update if is_stl else message,
+            no_update if is_stl else progress,
+            message if is_stl else no_update,
+            progress if is_stl else no_update,
+            no_update if running else {"nonce": time.time_ns()},
         )
 
     return app
@@ -2406,26 +2230,29 @@ def create_dashboard_app(
 
 def _open_browser_when_ready(url: str) -> None:
     for _ in range(50):
+        time.sleep(0.1)
         try:
-            with urlopen(url, timeout=0.5) as response:  # noqa: S310 - fixed local URL.
-                if response.status < 500:
-                    webbrowser.open(url)
-                    return
+            with urlopen(url, timeout=0.2):  # noqa: S310 - fixed local server URL.
+                pass
         except OSError:
-            time.sleep(0.1)
+            continue
+        webbrowser.open_new_tab(url)
+        return
 
 
-def run_dashboard(
-    jobs_root: Path,
+def run_validator_ui(
+    job_dir: Path,
     *,
     host: str = "127.0.0.1",
     port: int = 8050,
     open_browser: bool = True,
 ) -> None:
-    """Start the local dashboard and optionally open the default browser."""
-    app = create_dashboard_app(jobs_root)
-    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    url = f"http://{browser_host}:{port}/"
+    resolved = job_dir.expanduser().resolve()
+    if not resolved.is_dir():
+        raise DashboardDataError(f"입력 폴더가 존재하지 않습니다: {resolved}")
+    app = create_validator_app(resolved)
+    url = f"http://{host}:{port}/"
     if open_browser:
         threading.Thread(target=_open_browser_when_ready, args=(url,), daemon=True).start()
-    app.run(host=host, port=port, debug=False)
+    print(f"WAAM Validator is running on {url}")
+    app.run(host=host, port=port, debug=False, use_reloader=False)

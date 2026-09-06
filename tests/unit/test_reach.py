@@ -95,18 +95,18 @@ def test_reach_violation_is_normal_fail_and_is_written(fixture_root: Path, tmp_p
     config_data["robots"][0]["reach_radius_mm"] = 100.0
     (job / "config.yaml").write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
 
-    result = run_validation(job, tmp_path / "result", headless=True)
+    result = run_validation(job, tmp_path / "result")
 
     assert result.status == "FAIL"
     assert result.reach.passed is False
     assert any(reason.startswith("ROBOT_REACH: R1") for reason in result.failure_reasons)
     summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
-    assert summary["schema_version"] == "2.0"
-    assert summary["validator_version"] == "1.0"
+    assert summary["schema_version"] == "3.0"
+    assert summary["validator_version"] == "1.0.0"
     assert summary["reach"]["passed"] is False
     robot_csv = (result.output_dir / "robot_metrics.csv").read_text(encoding="utf-8")
     assert "reach_violation_point_count" in robot_csv
     report = (result.output_dir / "validation_report.md").read_text(encoding="utf-8")
     assert "Robot Reach" in report
-    assert "Error-severity Validation Issues" in report
-    assert "pipeline ended with `ERROR`" in report
+    assert "Validation Violations" in report
+    assert "fatal status `ERROR`" in report

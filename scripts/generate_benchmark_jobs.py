@@ -66,9 +66,7 @@ class RobotRows:
     def append(self, time_s: float, xyz: np.ndarray, mode: str) -> None:
         if time_s <= self.last_time:
             raise ValueError(f"R{self.robot_id} timestamp did not increase")
-        self.rows.append(
-            (time_s, float(xyz[0]), float(xyz[1]), float(xyz[2]), mode)
-        )
+        self.rows.append((time_s, float(xyz[0]), float(xyz[1]), float(xyz[2]), mode))
 
 
 def _line(points: Sequence[Point2D]) -> LineString:
@@ -177,10 +175,7 @@ def _sinusoidal_panel() -> list[LineString]:
     x_values = np.linspace(-190.0, 190.0, 161)
     paths: list[LineString] = []
     for offset in np.linspace(-105.0, 105.0, 7):
-        points = [
-            (float(x_mm), float(offset + 13.0 * math.sin(x_mm / 28.0)))
-            for x_mm in x_values
-        ]
+        points = [(float(x_mm), float(offset + 13.0 * math.sin(x_mm / 28.0))) for x_mm in x_values]
         paths.append(_line(points))
     return paths
 
@@ -201,9 +196,7 @@ def _spiral_wall() -> list[LineString]:
 
 def _triangular_truss() -> list[LineString]:
     vertices = [(-175.0, -105.0), (175.0, -105.0), (0.0, 190.0)]
-    paths = [
-        _line([vertices[index], vertices[(index + 1) % 3]]) for index in range(3)
-    ]
+    paths = [_line([vertices[index], vertices[(index + 1) % 3]]) for index in range(3)]
     center = (0.0, -6.666667)
     paths.extend(_line([vertex, center]) for vertex in vertices)
     midpoints = [
@@ -266,8 +259,7 @@ def _assign_paths(paths: list[LineString], config: Config) -> dict[int, list[Lin
     assignments = {1: [], 2: [], 3: []}
     loads = {1: 0.0, 2: 0.0, 3: 0.0}
     bases = {
-        robot.id: np.asarray(robot.base_xyz_mm[:2], dtype=np.float64)
-        for robot in config.robots
+        robot.id: np.asarray(robot.base_xyz_mm[:2], dtype=np.float64) for robot in config.robots
     }
     ordered = sorted(paths, key=lambda item: (-item.length, item.centroid.x, item.centroid.y))
     for path in ordered:
@@ -357,9 +349,7 @@ def _append_task(
     return builder.last_time
 
 
-def _build_trajectory(
-    paths: list[LineString], layers: int, config: Config
-) -> dict[int, RobotRows]:
+def _build_trajectory(paths: list[LineString], layers: int, config: Config) -> dict[int, RobotRows]:
     builders = {
         robot_id: RobotRows.create(robot_id, _home_position(config, robot_id))
         for robot_id in (1, 2, 3)
@@ -368,8 +358,7 @@ def _build_trajectory(
     global_time = 0.0
     for layer_index in range(layers):
         z_mm = (
-            config.process.build_plane_z_mm
-            + (layer_index + 0.5) * config.process.layer_height_mm
+            config.process.build_plane_z_mm + (layer_index + 0.5) * config.process.layer_height_mm
         )
         for robot_id in (1, 2, 3):
             if assignments[robot_id]:

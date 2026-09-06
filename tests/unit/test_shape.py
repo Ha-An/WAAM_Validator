@@ -12,6 +12,7 @@ from waam_validator.config.loader import load_config
 from waam_validator.errors import ValidationMessages
 from waam_validator.shape.deposition import build_deposited_layers
 from waam_validator.shape.layer_index import determine_layer_index
+from waam_validator.shape.mesh_components import repair_normals_and_count_bodies
 from waam_validator.shape.metrics import _unit_interval, compute_shape_metrics
 from waam_validator.shape.polygon_utils import polygon_components
 from waam_validator.shape.target import (
@@ -47,6 +48,41 @@ def test_nominal_bead_area(fixture_root: Path) -> None:
     assert layers[0].area == pytest.approx(expected, rel=2e-3)
 
 
+def test_mesh_repair_handles_disconnected_inverted_bodies() -> None:
+    first = trimesh.creation.box()
+    second = trimesh.creation.box()
+    second.apply_translation([3.0, 0.0, 0.0])
+    second.invert()
+    mesh = trimesh.util.concatenate([first, second])
+
+    assert repair_normals_and_count_bodies(mesh) == 2
+    assert mesh.is_winding_consistent
+    assert mesh.is_watertight
+    assert float(mesh.volume) == pytest.approx(2.0)
+
+
+def test_mesh_repair_fixes_one_reversed_face() -> None:
+    mesh = trimesh.creation.box()
+    faces = mesh.faces.copy()
+    faces[0] = faces[0][::-1]
+    mesh.faces = faces
+    assert not mesh.is_winding_consistent
+
+    assert repair_normals_and_count_bodies(mesh) == 1
+    assert mesh.is_winding_consistent
+    assert mesh.is_watertight
+    assert float(mesh.volume) == pytest.approx(1.0)
+
+
+def test_mesh_repair_handles_large_connected_mesh_iteratively() -> None:
+    mesh = trimesh.creation.icosphere(subdivisions=6)
+
+    assert len(mesh.faces) == 81_920
+    assert repair_normals_and_count_bodies(mesh) == 1
+    assert mesh.is_winding_consistent
+    assert mesh.is_watertight
+
+
 def test_target_slice_and_exact_metrics(fixture_root: Path) -> None:
     job = fixture_root / "collision_free"
     config = load_config(job / "config.yaml")
@@ -64,6 +100,23 @@ def test_target_slice_and_exact_metrics(fixture_root: Path) -> None:
     assert metrics.overfill_ratio == pytest.approx(0.0, abs=2e-4)
     assert metrics.iou == pytest.approx(1.0, abs=2e-4)
     assert metrics.passed
+
+
+def test_target_slicing_does_not_use_optional_trimesh_path_graph(
+    fixture_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = fixture_root / "collision_free"
+    config = load_config(job / "config.yaml")
+    mesh = load_target_mesh(job / "target.stl", config)
+
+    def forbidden_section(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Trimesh.section requires an optional graph engine")
+
+    monkeypatch.setattr(trimesh.Trimesh, "section", forbidden_section)
+    sliced = slice_target_layers(mesh, [0], config)
+
+    assert not sliced[0].is_empty
 
 
 def test_mathematically_bounded_shape_ratios_are_clamped() -> None:
@@ -88,6 +141,20 @@ def test_shape_failure_modes(fixture_root: Path, fixture_name: str, metric_name:
     )
     assert getattr(metrics, metric_name) > 0.05
     assert not metrics.passed
+
+
+def test_independent_offset_changes_shape_metrics_monotonically(fixture_root: Path) -> None:
+    config = load_config(fixture_root / "collision_free" / "config.yaml")
+    target = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    results = []
+    for offset in (0.0, 1.0, 2.0):
+        deposited = Polygon([(offset, 0), (10 + offset, 0), (10 + offset, 10), (offset, 10)])
+        metrics, _ = compute_shape_metrics({0: deposited}, {0: target}, config)
+        results.append(metrics)
+
+    assert [item.underfill_ratio for item in results] == pytest.approx([0.0, 0.1, 0.2])
+    assert [item.overfill_ratio for item in results] == pytest.approx([0.0, 0.1, 0.2])
+    assert results[0].iou > results[1].iou > results[2].iou
 
 
 def test_target_slice_preserves_hole(fixture_root: Path) -> None:

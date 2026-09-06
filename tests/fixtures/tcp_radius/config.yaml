@@ -64,12 +64,3 @@ shape_validation:
   minimum_layer_iou: 0.8
   maximum_failed_layer_ratio: 0.05
   area_epsilon_mm2: 1.0e-06
-output:
-  save_summary_json: true
-  save_report_markdown: true
-  save_collision_events_csv: true
-  save_robot_metrics_csv: true
-  save_layer_metrics_csv: true
-  save_deposited_stl: true
-  save_static_plots: false
-  animation_sample_interval_s: 1.0

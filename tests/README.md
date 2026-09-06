@@ -24,13 +24,12 @@ Motor와 Twisted 폴더의 `target.stl`만 형상 판정에 사용됩니다.
 
 ## 생성 결과 정책
 
-각 작업의 `output/`은 `.gitignore` 대상입니다. 과거 실행의 JSON, CSV, 로그, PNG,
+각 작업의 `output/`은 `.gitignore` 대상입니다. 과거 실행의 JSON, CSV, 로그,
 Replay HTML과 `deposited.stl`은 로컬 진단에는 사용할 수 있지만 GitHub에는 올리지
 않습니다. 재현 가능한 입력과 다음 요약만 추적합니다.
 
 - [10개 모델 benchmark 결과](benchmark_results.md)
 - [기계 판독용 benchmark 수치](benchmark_results.csv)
-- [전체 릴리스 준비 기록](../docs/release-readiness.md)
 
 Worker가 중단되어 `summary.json`이나 `error.json`이 없는 output 폴더는 완료 결과가
 아닙니다. UI의 최근 결과 선택에서도 자동으로 제외됩니다.
@@ -39,7 +38,7 @@ Worker가 중단되어 `summary.json`이나 `error.json`이 없는 output 폴더
 
 ```powershell
 waam-validator check .\tests\08
-waam-validator run .\tests\08 --headless --json
+waam-validator run .\tests\08 --json
 waam-validator ui .\tests\08
 ```
 

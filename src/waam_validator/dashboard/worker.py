@@ -1,4 +1,4 @@
-"""Subprocess entry point used by the dashboard run manager."""
+"""Subprocess entry point used by the local UI run manager."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from typing import Any
 from ..errors import ComputationError, WaamValidatorError
 from ..pipeline import run_validation
 from ..progress import ValidationProgress
-from .replay_service import write_json_atomic, write_validation_input_manifest
+from .replay_service import VALIDATION_STATUS, write_json_atomic
 
 
 def _write_status(output_dir: Path, payload: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / "dashboard_status.json"
+    target = output_dir / VALIDATION_STATUS
     enriched = {**payload, "updated_at": datetime.now().isoformat(timespec="seconds")}
     write_json_atomic(target, enriched)
 
 
 def run_worker(job_dir: Path, output_dir: Path) -> int:
-    """Run validation and persist a small phase-oriented dashboard state."""
+    """Run validation and persist a small phase-oriented UI state."""
     last_write_s = 0.0
     last_progress = -1.0
     last_stage = ""
@@ -61,8 +61,6 @@ def run_worker(job_dir: Path, output_dir: Path) -> int:
         result = run_validation(
             job_dir,
             output_dir,
-            headless=False,
-            generate_replay=False,
             progress_callback=report,
         )
     except WaamValidatorError as exc:
@@ -95,12 +93,6 @@ def run_worker(job_dir: Path, output_dir: Path) -> int:
         )
         return wrapped.exit_code
     try:
-        summary_path = output_dir / "summary.json"
-        if not summary_path.is_file():
-            # The single-job UI needs this core result even when a library caller's
-            # output preferences disable it.
-            write_json_atomic(summary_path, result.summary_dict())
-        write_validation_input_manifest(job_dir, output_dir)
         exit_code = 0 if result.status == "PASS" else 1
         _write_status(
             output_dir,
@@ -116,7 +108,7 @@ def run_worker(job_dir: Path, output_dir: Path) -> int:
         )
         return exit_code
     except Exception as exc:  # Keep UI state terminal even if final bookkeeping fails.
-        wrapped = ComputationError("DASHBOARD_FINALIZATION_ERROR", str(exc))
+        wrapped = ComputationError("UI_FINALIZATION_ERROR", str(exc))
         _write_status(
             output_dir,
             {

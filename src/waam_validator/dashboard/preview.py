@@ -15,6 +15,7 @@ from ..constants import MODE_D, MODE_T, MODE_W
 from ..models import TrajectorySet
 from ..schedule.metrics import compute_schedule_metrics
 from ..trajectory.reach import compute_reach_metrics
+from .views import robot_time_figure
 
 TARGET_FACE_LIMIT: Final = 50_000
 TRAJECTORY_POINT_LIMIT_PER_ROBOT: Final = 10_000
@@ -261,85 +262,24 @@ def _scene(
     return figure, warnings, len(faces), points_shown
 
 
-def _duration_label(seconds: float) -> str:
-    hours, remainder = divmod(int(round(seconds)), 3600)
-    minutes, seconds_rounded = divmod(remainder, 60)
-    return f"{hours:,}시간 {minutes:02d}분 {seconds_rounded:02d}초"
-
-
 def _statistics_figures(
     config: Config, trajectories: TrajectorySet
 ) -> tuple[go.Figure, go.Figure, go.Figure]:
     schedule = compute_schedule_metrics(trajectories)
     reach = compute_reach_metrics(trajectories, config)
     labels = [f"R{item.robot_id}" for item in schedule.robots]
-    times = go.Figure()
-    for name, field, color in (
-        ("Deposition", "deposition_time_s", "#f97316"),
-        ("Travel", "travel_time_s", "#38bdf8"),
-        ("Wait", "wait_time_s", "#64748b"),
-    ):
-        seconds = [float(getattr(item, field)) for item in schedule.robots]
-        percentages = [
-            value / schedule.makespan_s * 100.0 if schedule.makespan_s > 0 else 0.0
-            for value in seconds
-        ]
-        times.add_bar(
-            x=labels,
-            y=percentages,
-            name=name,
-            marker_color=color,
-            text=[f"{value:.1f}%" for value in percentages],
-            textposition="inside",
-            customdata=seconds,
-            hovertemplate=(
-                f"%{{x}}<br>비율 %{{y:.2f}}%<br>시간 %{{customdata:,.2f}} s<extra>{name}</extra>"
-            ),
-        )
-    inactive_seconds = [
-        max(0.0, schedule.makespan_s - item.completion_s) for item in schedule.robots
-    ]
-    inactive_percentages = [
-        value / schedule.makespan_s * 100.0 if schedule.makespan_s > 0 else 0.0
-        for value in inactive_seconds
-    ]
-    times.add_bar(
-        x=labels,
-        y=inactive_percentages,
-        name="완료 후 비활성",
-        marker_color="#334155",
-        text=[f"{value:.1f}%" for value in inactive_percentages],
-        textposition="inside",
-        customdata=inactive_seconds,
-        hovertemplate=(
-            "%{x}<br>비율 %{y:.2f}%<br>시간 %{customdata:,.2f} s"
-            "<extra>완료 후 비활성</extra>"
-        ),
-    )
-    times.update_layout(
-        template="plotly_dark",
-        barmode="stack",
-        height=320,
-        margin={"l": 55, "r": 15, "t": 50, "b": 40},
-        yaxis={"title": "Makespan 대비 비율 [%]", "range": [0, 100], "ticksuffix": "%"},
-        uniformtext={"mode": "show", "minsize": 10},
-        annotations=[
+    times = robot_time_figure(
+        [
             {
-                "text": (
-                    f"기준 Makespan: {schedule.makespan_s:,.2f} s "
-                    f"({_duration_label(schedule.makespan_s)}) = 100%"
-                ),
-                "xref": "paper",
-                "yref": "paper",
-                "x": 1.0,
-                "y": 1.16,
-                "xanchor": "right",
-                "showarrow": False,
-                "font": {"color": "#aebed0", "size": 12},
+                "robot_id": item.robot_id,
+                "completion_s": item.completion_s,
+                "deposition_time_s": item.deposition_time_s,
+                "travel_time_s": item.travel_time_s,
+                "wait_time_s": item.wait_time_s,
+                "inactive_after_completion_s": max(0.0, schedule.makespan_s - item.completion_s),
             }
-        ],
-        paper_bgcolor="#0d1927",
-        plot_bgcolor="#0d1927",
+            for item in schedule.robots
+        ]
     )
     motion = go.Figure()
     for name, length_field, time_field, speed_field, color in (
@@ -448,9 +388,149 @@ def _statistics_figures(
     return times, motion, reach_figure
 
 
-def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
-    """Build one duration-accurate, state-changing horizontal bar per robot."""
+def _gantt_run_count(trajectories: TrajectorySet) -> int:
+    return sum(
+        1 + int(np.count_nonzero(item.mode[1:-1] != item.mode[:-2])) for item in trajectories.robots
+    )
+
+
+def _proportional_bin_states(bin_durations: np.ndarray) -> np.ndarray:
+    """Choose one raster color per bin while preserving local state-time shares.
+
+    A dominant-state choice systematically hides short but frequent states.  The
+    accumulated-share allocator instead dithers colors across neighboring bins,
+    while only selecting states that are actually present in the current bin.
+    """
+    category_count, bin_count = bin_durations.shape
+    carry = np.zeros(category_count, dtype=np.float64)
+    states = np.full(bin_count, category_count - 1, dtype=np.uint8)
+    for bin_index in range(bin_count):
+        durations = bin_durations[:, bin_index]
+        total = float(np.sum(durations))
+        if total <= 0.0:
+            continue
+        carry += durations / total
+        eligible = durations > max(1.0e-12, total * 1.0e-12)
+        scores = np.where(eligible, carry, -np.inf)
+        selected = int(np.argmax(scores))
+        states[bin_index] = np.uint8(selected)
+        carry[selected] -= 1.0
+    return states
+
+
+def _overview_gantt_figure(trajectories: TrajectorySet, bins: int = 2_000) -> go.Figure:
+    """Render a bounded proportional raster with exact per-bin duration hover data."""
     makespan = max(float(item.time_s[-1]) for item in trajectories.robots)
+    edges = np.linspace(0.0, makespan, bins + 1, dtype=np.float64)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    states = np.full((3, bins), 3, dtype=np.uint8)
+    custom = np.zeros((3, bins, 6), dtype=np.float64)
+    custom[:, :, 0] = edges[:-1]
+    custom[:, :, 1] = edges[1:]
+    for robot_index, trajectory in enumerate(trajectories.robots):
+        time_s = trajectory.time_s
+        modes = trajectory.mode[:-1]
+        durations = np.diff(time_s)
+        mode_durations = np.zeros((3, bins), dtype=np.float64)
+        for mode_value in (int(MODE_T), int(MODE_D), int(MODE_W)):
+            cumulative = np.concatenate(
+                ([0.0], np.cumsum(durations * (modes == mode_value), dtype=np.float64))
+            )
+            clipped = np.minimum(edges, float(time_s[-1]))
+            indices = np.searchsorted(time_s, clipped, side="right") - 1
+            indices = np.clip(indices, 0, len(modes) - 1)
+            values = cumulative[indices] + (clipped - time_s[indices]) * (
+                modes[indices] == mode_value
+            )
+            values[clipped >= time_s[-1]] = cumulative[-1]
+            mode_durations[mode_value] = np.diff(values)
+        inactive_durations = np.maximum(0.0, np.diff(edges) - mode_durations.sum(axis=0))
+        state_durations = np.vstack((mode_durations, inactive_durations))
+        states[robot_index] = _proportional_bin_states(state_durations)
+        custom[robot_index, :, 2] = mode_durations[int(MODE_D)]
+        custom[robot_index, :, 3] = mode_durations[int(MODE_T)]
+        custom[robot_index, :, 4] = mode_durations[int(MODE_W)]
+        custom[robot_index, :, 5] = inactive_durations
+    colors = ["#38bdf8", "#f97316", "#64748b", "#1e293b"]
+    scale: list[list[float | str]] = []
+    for index, color in enumerate(colors):
+        scale.extend([[index / 4.0, color], [(index + 1) / 4.0, color]])
+    figure = go.Figure(
+        go.Heatmap(
+            x=centers,
+            y=["R1", "R2", "R3"],
+            z=states,
+            zmin=-0.5,
+            zmax=3.5,
+            colorscale=scale,
+            showscale=False,
+            customdata=custom,
+            hovertemplate=(
+                "%{y}<br>%{customdata[0]:,.2f}–%{customdata[1]:,.2f} s"
+                "<br>Deposition %{customdata[2]:,.2f} s"
+                "<br>Travel %{customdata[3]:,.2f} s"
+                "<br>Wait %{customdata[4]:,.2f} s"
+                "<br>완료 후 비활성 %{customdata[5]:,.2f} s"
+                "<extra>시간 비율 bin 요약</extra>"
+            ),
+        )
+    )
+    for name, color in (
+        ("Travel · 비적층 이동", colors[0]),
+        ("Deposition · 적층", colors[1]),
+        ("Wait · 위치 유지 대기", colors[2]),
+        ("완료 후 비활성", colors[3]),
+    ):
+        figure.add_scatter(x=[None], y=[None], mode="markers", marker_color=color, name=name)
+    figure.update_layout(
+        template="plotly_dark",
+        height=380,
+        margin={"l": 65, "r": 20, "t": 100, "b": 55},
+        xaxis={"title": "시간 [s]", "range": [0.0, makespan], "rangeslider": {"visible": True}},
+        yaxis={"autorange": "reversed", "fixedrange": True},
+        legend={"orientation": "h", "x": 0.0, "y": 1.08, "yanchor": "bottom"},
+        annotations=[
+            {
+                "text": (
+                    "전체보기는 2,000개 시간 bin의 상태시간 비율 요약입니다. "
+                    "확대하면 정확한 구간을 불러옵니다."
+                ),
+                "xref": "paper",
+                "yref": "paper",
+                "x": 1.0,
+                "y": 1.2,
+                "xanchor": "right",
+                "showarrow": False,
+                "font": {"color": "#aebed0", "size": 11},
+            }
+        ],
+        paper_bgcolor="#0d1927",
+        plot_bgcolor="#0d1927",
+    )
+    return figure
+
+
+def build_gantt_figure(
+    trajectories: TrajectorySet,
+    *,
+    start_s: float | None = None,
+    end_s: float | None = None,
+    maximum_segments: int = 2_000,
+) -> go.Figure:
+    """Build a bounded overview or exact state-changing bars for a selected range."""
+    makespan = max(float(item.time_s[-1]) for item in trajectories.robots)
+    full_range = (
+        start_s is None
+        and end_s is None
+        or float(start_s or 0.0) <= 0.0
+        and float(end_s if end_s is not None else makespan) >= makespan
+    )
+    if full_range and _gantt_run_count(trajectories) > maximum_segments:
+        return _overview_gantt_figure(trajectories, maximum_segments)
+    view_start = max(0.0, float(start_s or 0.0))
+    view_end = min(makespan, float(end_s if end_s is not None else makespan))
+    if view_end <= view_start:
+        view_start, view_end = 0.0, makespan
     state_specs = (
         (int(MODE_D), "Deposition · 적층", "#f97316"),
         (int(MODE_T), "Travel · 비적층 이동", "#38bdf8"),
@@ -458,8 +538,7 @@ def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
         (None, "완료 후 비활성 · 작업 종료", "#1e293b"),
     )
     segments: dict[int | None, tuple[list[float], list[float], list[float], list[str]]] = {
-        mode_value: ([], [], [], [])
-        for mode_value, _, _ in state_specs
+        mode_value: ([], [], [], []) for mode_value, _, _ in state_specs
     }
     for trajectory in trajectories.robots:
         interval_modes = trajectory.mode[:-1]
@@ -470,21 +549,28 @@ def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
         for start_raw, stop_raw in zip(run_starts, run_stops, strict=True):
             start_index = int(start_raw)
             stop_index = int(stop_raw)
-            start_s = float(trajectory.time_s[start_index])
-            end_s = float(trajectory.time_s[stop_index])
+            interval_start = float(trajectory.time_s[start_index])
+            interval_end = float(trajectory.time_s[stop_index])
+            if interval_end <= view_start or interval_start >= view_end:
+                continue
+            clipped_start = max(interval_start, view_start)
+            clipped_end = min(interval_end, view_end)
             starts, ends, durations, robots = segments[int(interval_modes[start_index])]
-            starts.append(start_s)
-            ends.append(end_s)
-            durations.append(end_s - start_s)
+            starts.append(clipped_start)
+            ends.append(clipped_end)
+            durations.append(clipped_end - clipped_start)
             robots.append(robot_label)
 
         completion_s = float(trajectory.time_s[-1])
-        if completion_s < makespan:
+        if completion_s < view_end and makespan > view_start:
             starts, ends, durations, robots = segments[None]
-            starts.append(completion_s)
-            ends.append(makespan)
-            durations.append(makespan - completion_s)
-            robots.append(robot_label)
+            inactive_start = max(completion_s, view_start)
+            inactive_end = min(makespan, view_end)
+            if inactive_end > inactive_start:
+                starts.append(inactive_start)
+                ends.append(inactive_end)
+                durations.append(inactive_end - inactive_start)
+                robots.append(robot_label)
 
     figure = go.Figure()
     for mode_value, name, color in state_specs:
@@ -501,12 +587,10 @@ def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
             orientation="h",
             width=0.66,
             name=name,
-            marker={"color": color, "line": {"color": "#0d1927", "width": 0.25}},
+            marker={"color": color, "line": {"width": 0}},
             customdata=customdata,
             hovertemplate=(
-                "%{y}<br>상태: "
-                + name
-                + "<br>시작 %{customdata[0]:,.2f} s"
+                "%{y}<br>상태: " + name + "<br>시작 %{customdata[0]:,.2f} s"
                 "<br>종료 %{customdata[1]:,.2f} s"
                 "<br>지속시간 %{customdata[2]:,.2f} s<extra></extra>"
             ),
@@ -536,7 +620,7 @@ def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
         height=420,
         margin={"l": 65, "r": 20, "t": 105, "b": 55},
         xaxis={
-            "range": [detail_start_s, detail_end_s],
+            "range": [view_start, view_end],
             "title": "시간 [s]",
             "rangeslider": {"visible": True, "thickness": 0.12},
         },
@@ -589,7 +673,7 @@ def _gantt_figure(trajectories: TrajectorySet) -> go.Figure:
 def build_input_preview(config: Config, trajectories: TrajectorySet, mesh: Any) -> InputPreview:
     """Build bounded input preview figures without modifying validation inputs."""
     scene, warnings, shown_faces, shown_points = _scene(config, trajectories, mesh)
-    gantt_figure = _gantt_figure(trajectories)
+    gantt_figure = build_gantt_figure(trajectories)
     time_figure, motion_figure, reach_figure = _statistics_figures(config, trajectories)
     return InputPreview(
         scene=scene,

@@ -9,9 +9,9 @@ import trimesh
 
 from waam_validator.dashboard.data import DashboardDataError
 from waam_validator.dashboard.input_inspector import (
-    inspect_dashboard_inputs,
+    inspect_dashboard_input_bundle,
     inspection_is_current,
-    resolve_dashboard_inputs,
+    resolve_input_directory,
 )
 
 
@@ -26,8 +26,8 @@ def _copy_job(destination: Path, fixture: str = "collision_free") -> Path:
 def test_resolve_inputs_defaults_to_standard_files_and_inspects_details(tmp_path: Path) -> None:
     job = _copy_job(tmp_path / "new_model")
 
-    paths = resolve_dashboard_inputs(tmp_path, job)
-    inspection = inspect_dashboard_inputs(paths)
+    paths = resolve_input_directory(job)
+    inspection, _, _, _ = inspect_dashboard_input_bundle(paths)
 
     assert inspection.status in {"READY", "WARNING"}
     assert inspection.can_run is True
@@ -39,46 +39,31 @@ def test_resolve_inputs_defaults_to_standard_files_and_inspects_details(tmp_path
     assert inspection_is_current(inspection.to_dict(), paths) is True
 
 
-def test_resolve_inputs_rejects_wrong_name_parent_and_outside_root(tmp_path: Path) -> None:
+def test_resolve_inputs_requires_one_folder_and_three_standard_files(tmp_path: Path) -> None:
     job = _copy_job(tmp_path / "job")
-    outside = _copy_job(tmp_path.parent / f"{tmp_path.name}-outside")
-    try:
-        with pytest.raises(DashboardDataError, match="파일명"):
-            resolve_dashboard_inputs(
-                tmp_path,
-                job,
-                job / "renamed.yaml",
-                job / "trajectory.csv",
-                job / "target.stl",
-            )
-        with pytest.raises(DashboardDataError, match="함께"):
-            resolve_dashboard_inputs(
-                tmp_path,
-                job,
-                job / "config.yaml",
-                outside / "trajectory.csv",
-                job / "target.stl",
-            )
-        with pytest.raises(DashboardDataError, match="JOBS_ROOT"):
-            resolve_dashboard_inputs(tmp_path, outside)
-    finally:
-        shutil.rmtree(outside)
+    (job / "config.yaml").rename(job / "renamed.yaml")
+    with pytest.raises(DashboardDataError, match="config.yaml"):
+        resolve_input_directory(job)
+    with pytest.raises(DashboardDataError, match="존재하지 않습니다"):
+        resolve_input_directory(tmp_path / "missing")
 
 
 def test_resolve_inputs_rejects_symlink_escape_when_supported(tmp_path: Path) -> None:
-    outside = _copy_job(tmp_path.parent / f"{tmp_path.name}-outside")
-    link = tmp_path / "linked"
+    job = _copy_job(tmp_path / "job")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-config.yaml"
+    outside.write_text("outside", encoding="utf-8")
     try:
+        (job / "config.yaml").unlink()
         try:
-            link.symlink_to(outside, target_is_directory=True)
+            (job / "config.yaml").symlink_to(outside)
         except OSError:
-            pytest.skip("directory symlinks are not available")
-        with pytest.raises(DashboardDataError, match="JOBS_ROOT"):
-            resolve_dashboard_inputs(tmp_path, link)
+            pytest.skip("file symlinks are not available")
+        with pytest.raises(DashboardDataError, match="밖"):
+            resolve_input_directory(job)
     finally:
-        if link.is_symlink():
-            link.unlink()
-        shutil.rmtree(outside)
+        if (job / "config.yaml").is_symlink():
+            (job / "config.yaml").unlink()
+        outside.unlink(missing_ok=True)
 
 
 def test_inspection_distinguishes_expected_fail_and_blocking_error(tmp_path: Path) -> None:
@@ -91,8 +76,8 @@ def test_inspection_distinguishes_expected_fail_and_blocking_error(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    paths = resolve_dashboard_inputs(tmp_path, expected_fail)
-    inspection = inspect_dashboard_inputs(paths)
+    paths = resolve_input_directory(expected_fail)
+    inspection, _, _, _ = inspect_dashboard_input_bundle(paths)
     assert inspection.status == "EXPECTED_FAIL"
     assert inspection.can_run is True
     assert inspection.expected_failures[0]["code"] == "WAIT_POSITION_CHANGED"
@@ -100,7 +85,7 @@ def test_inspection_distinguishes_expected_fail_and_blocking_error(tmp_path: Pat
     blocked = _copy_job(tmp_path / "blocked")
     trajectory = blocked / "trajectory.csv"
     trajectory.write_text("robot_id,time_s,x_mm,y_mm,z_mm,mode\n", encoding="utf-8")
-    blocked_inspection = inspect_dashboard_inputs(resolve_dashboard_inputs(tmp_path, blocked))
+    blocked_inspection, _, _, _ = inspect_dashboard_input_bundle(resolve_input_directory(blocked))
     assert blocked_inspection.status == "BLOCKED"
     assert blocked_inspection.can_run is False
     assert blocked_inspection.blocking_errors[0]["code"] == "MISSING_ROBOT"
@@ -108,8 +93,8 @@ def test_inspection_distinguishes_expected_fail_and_blocking_error(tmp_path: Pat
 
 def test_inspection_signature_changes_when_input_changes(tmp_path: Path) -> None:
     job = _copy_job(tmp_path / "job")
-    paths = resolve_dashboard_inputs(tmp_path, job)
-    inspection = inspect_dashboard_inputs(paths).to_dict()
+    paths = resolve_input_directory(job)
+    inspection = inspect_dashboard_input_bundle(paths)[0].to_dict()
 
     # Dash sends Store data through JavaScript, whose numeric precision cannot
     # preserve nanosecond timestamps. The signature must therefore keep them as
@@ -129,7 +114,7 @@ def test_inspection_blocks_non_watertight_and_coordinate_mismatch(tmp_path: Path
     open_mesh.apply_translation((0.0, 0.0, 1.0))
     open_mesh.update_faces(list(range(len(open_mesh.faces) - 1)))
     open_mesh.export(non_watertight / "target.stl")
-    inspection = inspect_dashboard_inputs(resolve_dashboard_inputs(tmp_path, non_watertight))
+    inspection = inspect_dashboard_input_bundle(resolve_input_directory(non_watertight))[0]
     assert inspection.status == "BLOCKED"
     assert any(item["code"] == "TARGET_NOT_WATERTIGHT" for item in inspection.blocking_errors)
 
@@ -137,7 +122,7 @@ def test_inspection_blocks_non_watertight_and_coordinate_mismatch(tmp_path: Path
     far_mesh = trimesh.creation.box(extents=(10.0, 10.0, 2.0))
     far_mesh.apply_translation((10_000.0, 10_000.0, 1.0))
     far_mesh.export(mismatch / "target.stl")
-    inspection = inspect_dashboard_inputs(resolve_dashboard_inputs(tmp_path, mismatch))
+    inspection = inspect_dashboard_input_bundle(resolve_input_directory(mismatch))[0]
     assert inspection.status == "BLOCKED"
     assert any(
         item["code"] == "TARGET_TRAJECTORY_FRAME_MISMATCH" for item in inspection.blocking_errors

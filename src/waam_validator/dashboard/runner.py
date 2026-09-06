@@ -1,4 +1,4 @@
-"""Isolated validation process management for the local dashboard."""
+"""Isolated validation process management for the local UI."""
 
 from __future__ import annotations
 
@@ -14,11 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from .data import JobRecord, RunRecord
-from .replay_service import REPLAY_STATUS, write_json_atomic
+from .replay_service import (
+    DEPOSITED_STL_STATUS,
+    REPLAY_STATUS,
+    VALIDATION_STATUS,
+    write_json_atomic,
+)
 
 
 class ValidationAlreadyRunningError(RuntimeError):
-    """Raised when a second dashboard validation is requested."""
+    """Raised when a second UI validation is requested."""
 
 
 @dataclass(slots=True)
@@ -34,11 +39,11 @@ class ActiveRun:
 class ActiveReplay:
     job: JobRecord
     run: RunRecord
-    interval_s: float
+    interval_s: float | None
     process: subprocess.Popen[bytes]
     started_at: datetime
     started_monotonic: float
-    cancel_requested: bool = False
+    artifact_kind: str = "replay"
 
 
 def allocate_output_path(job_dir: Path, now: datetime | None = None) -> Path:
@@ -121,7 +126,7 @@ class ValidationRunManager:
                     "log": "",
                 }
             exit_code = active.process.poll()
-            status_path = active.output_dir / "dashboard_status.json"
+            status_path = active.output_dir / VALIDATION_STATUS
             status = _read_status(status_path) if status_path.is_file() else {}
             running = exit_code is None
             if not status:
@@ -161,7 +166,7 @@ class ReplayAlreadyRunningError(RuntimeError):
 
 
 class ReplayRunManager:
-    """Generate at most one replay in an isolated process."""
+    """Generate at most one derived result artifact in an isolated process."""
 
     def __init__(self, python_executable: str | None = None) -> None:
         self._python = python_executable or sys.executable
@@ -210,31 +215,46 @@ class ReplayRunManager:
             )
             return run.directory / "replay.html"
 
-    def cancel(self) -> bool:
+    def start_deposited_stl(self, job: JobRecord, run: RunRecord) -> Path:
+        """Start an on-demand nominal deposited STL worker."""
         with self._lock:
-            active = self._active
-            if active is None or active.process.poll() is not None:
-                return False
-            active.cancel_requested = True
-            active.process.terminate()
-            try:
-                active.process.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                active.process.kill()
-                active.process.wait(timeout=3.0)
-            (active.run.directory / ".replay.html.tmp").unlink(missing_ok=True)
+            if self._active is not None and self._active.process.poll() is None:
+                raise ReplayAlreadyRunningError("다른 추가 산출물이 이미 생성 중입니다.")
             write_json_atomic(
-                active.run.directory / REPLAY_STATUS,
+                run.directory / DEPOSITED_STL_STATUS,
                 {
-                    "state": "FINISHED",
-                    "stage": "cancelled",
-                    "message": "사용자가 Replay 생성을 취소했습니다.",
-                    "verdict": "CANCELLED",
+                    "state": "RUNNING",
+                    "stage": "starting",
+                    "message": "적층 STL 생성 프로세스를 시작하고 있습니다.",
                     "progress": 0.0,
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 },
             )
-            return True
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            process = subprocess.Popen(
+                [
+                    self._python,
+                    "-m",
+                    "waam_validator.dashboard.deposited_stl_worker",
+                    str(job.path),
+                    str(run.directory),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            now = datetime.now()
+            self._active = ActiveReplay(
+                job,
+                run,
+                None,
+                process,
+                now,
+                time.monotonic(),
+                artifact_kind="deposited_stl",
+            )
+            return run.directory / "deposited.stl"
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -249,7 +269,10 @@ class ReplayRunManager:
                     "progress": 0.0,
                 }
             exit_code = active.process.poll()
-            status_path = active.run.directory / REPLAY_STATUS
+            status_name = (
+                REPLAY_STATUS if active.artifact_kind == "replay" else DEPOSITED_STL_STATUS
+            )
+            status_path = active.run.directory / status_name
             status = _read_status(status_path) if status_path.is_file() else {}
             running = exit_code is None
             if not status:
@@ -257,26 +280,19 @@ class ReplayRunManager:
                     "state": "RUNNING" if running else "FINISHED",
                     "stage": "starting" if running else "process_exit",
                     "message": (
-                        "Replay 생성 프로세스를 시작하고 있습니다."
+                        "추가 산출물 생성 프로세스를 시작하고 있습니다."
                         if running
-                        else "Replay 프로세스가 상태 파일 없이 종료되었습니다."
+                        else "산출물 프로세스가 상태 파일 없이 종료되었습니다."
                     ),
                     "progress": 0.0,
                 }
             if not running:
                 status["exit_code"] = exit_code
-                if active.cancel_requested:
-                    status.update(
-                        state="FINISHED",
-                        stage="cancelled",
-                        message="사용자가 Replay 생성을 취소했습니다.",
-                        verdict="CANCELLED",
-                    )
-                elif status.get("state") != "FINISHED":
+                if status.get("state") != "FINISHED":
                     status.update(
                         state="FINISHED",
                         stage="process_exit",
-                        message="Replay 프로세스가 완료 상태를 기록하지 못하고 종료되었습니다.",
+                        message="산출물 프로세스가 완료 상태를 기록하지 못하고 종료되었습니다.",
                         verdict="ERROR",
                     )
                 status.setdefault("verdict", "READY" if exit_code == 0 else "ERROR")
@@ -287,6 +303,7 @@ class ReplayRunManager:
                 "job_name": active.job.name,
                 "run_name": active.run.run_name,
                 "interval_s": active.interval_s,
+                "artifact_kind": active.artifact_kind,
                 "started_at": active.started_at.isoformat(timespec="seconds"),
                 "elapsed_s": elapsed,
             }

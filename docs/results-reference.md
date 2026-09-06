@@ -1,48 +1,42 @@
 # 결과 및 산출물 참조
 
-## 출력 폴더 정책
+WAAM Validator 1.0.0의 현재 결과 schema는 `3.0`입니다. 기본 Validation은 판정 재현과
+자동 처리에 필요한 핵심 파일만 기록합니다.
 
-기본 실행은 입력 작업 폴더 아래에 매번 새 run 디렉터리를 만듭니다.
+## 상태와 출력 폴더
 
-```text
-my_job/
-└── output/
-    ├── 2026-09-05_101530/
-    └── 2026-09-05_101530_001/
-```
+| 상태 | 의미 | 종료 코드 |
+| --- | --- | ---: |
+| `PASS` | 활성화된 모든 판정 기준 충족 | 0 |
+| `FAIL` | 계산은 완료됐지만 Reach·충돌·형상·공정 기준 위반 | 1 |
+| `ERROR` | 입력·Target·계산·출력 오류로 계산을 완료하지 못함 | 2–5 |
 
-같은 초에 실행해 경로가 겹치면 `_001`, `_002` suffix를 붙입니다. 이전 결과를
-삭제하거나 덮어쓰지 않습니다. `--output PATH`를 사용하면 정확한 경로를 쓰며 기존
-비어 있지 않은 폴더는 거부합니다.
+기본 경로는 `<JOB_DIR>/output/YYYY-MM-DD_HHMMSS/`입니다. 같은 초에 다시 실행하면
+`_001`, `_002` suffix를 붙입니다. 명시한 `--output`이 비어 있지 않으면 덮어쓰지 않고
+종료 코드 5로 거부합니다.
 
-Config의 `output` flag에 따라 선택 산출물이 달라질 수 있습니다. `run.log`와
-`warnings.csv`는 정상 계산 과정에서 항상 생성됩니다. 치명 오류가 생기면 가능한
-경우 `error.json`을 남깁니다.
+## 기본 파일 집합
 
-## 결과 상태
+| 파일 | 내용 |
+| --- | --- |
+| `summary.json` | 최종 판정과 일정·Reach·충돌·형상 요약 |
+| `validation_report.md` | 사람이 읽는 결과 보고서 |
+| `robot_metrics.csv` | 로봇별 원시 시간·거리·속도·Reach |
+| `collision_events.csv` | 병합된 Arm Envelope/TCP Radius 이벤트 |
+| `layer_metrics.csv` | 평가 layer별 면적과 형상 지표 |
+| `run.log` | 입력, 계산 단계와 판정 로그 |
+| `validation_inputs.json` | 세 입력 파일의 크기와 nanosecond 수정 시각 |
 
-| 상태 | 의미 | CLI 종료 코드 |
-| --- | --- | --- |
-| `PASS` | 활성화된 판정 기준을 모두 만족 | `0` |
-| `FAIL` | 계산은 완료했으나 한 개 이상의 기준을 위반 | `1` |
-| `ERROR` | 입력·Target·계산·출력 문제로 판정을 완료하지 못함 | `2`~`5` |
-
-`FAIL`은 예외가 아니므로 전체 결과 파일을 저장하고 traceback 없이 종료합니다.
+`warnings.csv`, 정적 PNG, 기본 `deposited.stl`, 기본 `replay.html`은 생성하지 않습니다.
 
 ## `summary.json`
 
-자동화가 가장 먼저 읽어야 하는 고정 schema의 핵심 결과입니다. 여기의
-`schema_version`은 **결과 파일 형식의 버전**이며 Config나 WAAM Validator
-애플리케이션 버전이 아닙니다. `config.yaml`에는 버전 필드가 없습니다.
-
-현재 UI와 Replay worker는 Capsule 판정 구조를 가진 결과 schema `2.0`만 지원합니다.
-기존 schema `1.1` 파일을 삭제하지는 않지만 최근 결과로 재사용하지 않으며,
-Validation을 다시 실행하라는 안내를 표시합니다.
+상위 구조는 다음과 같습니다.
 
 ```json
 {
-  "schema_version": "2.0",
-  "validator_version": "1.0",
+  "schema_version": "3.0",
+  "validator_version": "1.0.0",
   "status": "PASS",
   "input": {},
   "schedule": {},
@@ -50,256 +44,166 @@ Validation을 다시 실행하라는 안내를 표시합니다.
   "collision": {},
   "shape": {},
   "failure_reasons": [],
-  "warnings": [],
-  "errors": [],
+  "issues": [],
   "output_directory": "..."
 }
 ```
 
-| 최상위 필드 | 의미 |
-| --- | --- |
-| `schema_version` | `summary.json` 결과 형식 버전 |
-| `validator_version` | 결과를 생성한 WAAM Validator 애플리케이션 버전 |
-| `status` | 최종 `PASS`, `FAIL` 또는 `ERROR` 상태 |
-
-### `input`
-
-| 필드 | 의미 |
-| --- | --- |
-| `directory` | canonical 입력 폴더 절대 경로 |
-| `trajectory_rows` | 세 로봇을 합친 CSV 행 수 |
-| `target_watertight` | 로딩·선택적 repair 후 Target watertight 상태 |
-
 ### `schedule`
 
-| 필드 | 의미 |
-| --- | --- |
-| `makespan_s` | 세 completion 중 최댓값 |
-| `robot_completion_s` | robot ID 문자열별 마지막 timestamp |
-| `workload_imbalance_s` | 최대 completion과 최소 completion의 차이 |
-| `normalized_imbalance` | imbalance / makespan |
+- `makespan_s`: 세 로봇 completion의 최댓값
+- `robot_completion_s`: Robot ID별 trajectory 종료 시각
+- `workload_imbalance_s`: 최대 completion − 최소 completion
+- `normalized_imbalance`: imbalance / makespan
 
-### `reach`
-
-`passed`와 로봇별 `robots` 배열을 포함합니다.
-
-| 로봇 필드 | 의미 |
-| --- | --- |
-| `robot_id` | 1, 2, 3 |
-| `passed` | Reach 위반 절점이 없는지 |
-| `reach_radius_mm` | Config의 3D Reach 반경 |
-| `maximum_reach_mm` | Base에서 가장 먼 원본 TCP 절점까지의 3D 거리 |
-| `minimum_margin_mm` | 설정 반경 - 최대 사용 거리; 음수이면 초과 |
-| `utilization_ratio` | 최대 사용 거리 / 설정 반경 |
-| `violation_point_count` | Reach 밖의 원본 절점 수 |
-| `first_violation_s`, `last_violation_s` | 최초·최종 위반 시각, 없으면 `null` |
-
-### `collision`
-
-| 필드 | 의미 |
-| --- | --- |
-| `passed` | 활성 검사에서 event가 하나도 없는지 |
-| `collision_event_count` | 두 종류 event 총수 |
-| `arm_envelope` | 2D Arm Capsule 판정과 최악 safety margin 정보 |
-| `tcp_radius` | TCP 원형 안전영역 판정과 최소 TCP 거리 정보 |
-
-`arm_envelope`에는 `enabled`, `passed`, `event_count`,
-`minimum_safety_margin_mm`, `centerline_distance_at_worst_mm`,
-`required_distance_at_worst_mm`, `capsule_surface_clearance_at_worst_mm`, `pair`,
-`time_s`, `closest_points_xy_mm`, 최악 시점의 세 `tcp_positions_xy_mm`가 들어갑니다.
-Safety margin은 중심선 최단거리에서 두 Arm Capsule 반경과 공통 안전거리를 모두 뺀
-값이므로 음수이면 요구 여유가 부족합니다. Capsule 표면 간격은 공통 안전거리를 빼기
-전 실제 두 대표 폭 사이의 간격입니다.
-
-`tcp_radius`에는 `enabled`, `passed`, `event_count`, `minimum_distance_mm`,
-`required_distance_at_minimum_mm`, `pair`, `time_s`가 들어갑니다. 검사를 비활성화해도
-두 영역의 최소 지표는 계산되지만 event와 FAIL은 만들지 않습니다.
+상태별 시간과 완료 후 비활성 시간은 `robot_metrics.csv`에 저장합니다.
 
 ### `shape`
 
-| 필드 | 의미 |
-| --- | --- |
-| `passed` | 모든 전체 형상 threshold 통과 여부 |
-| `target_volume_mm3` | layer 단면 적분 Target 체적 |
-| `deposited_volume_mm3` | layer union 적분 적층 체적 |
-| `coverage` | 교집합 체적 / Target 체적 |
-| `underfill_ratio` | 미적층 Target 체적 / Target 체적 |
-| `overfill_ratio` | Target 밖 적층 체적 / Target 체적 |
-| `iou` | 교집합 체적 / 합집합 체적 |
-| `failed_layer_count` | 개별 IoU 기준 실패 layer 수 |
-| `evaluated_layer_count` | Target 또는 deposition이 존재하는 평가 layer 수 |
-| `failed_layer_ratio` | 실패 layer 수 / 평가 layer 수 |
-| `target_mesh_volume_mm3` | STL mesh 자체의 절대 체적 |
-| `target_volume_discrepancy_ratio` | mesh 체적과 layer 적분 체적의 상대 차이 |
+`target_volume_mm3`, `deposited_volume_mm3`, `intersection_volume_mm3`,
+`underfill_volume_mm3`, `overfill_volume_mm3`는 Layer 단면적을 명목 Layer 높이로
+적분한 체적입니다. Coverage·Underfill·Overfill·IoU는 이 체적 합계에서 계산하므로
+Layer 크기가 서로 달라도 면적 가중이 유지됩니다. 원본 mesh 체적은
+`target_mesh_volume_mm3`, 두 Target 체적의 상대 차이는
+`target_volume_discrepancy_ratio`로 별도 기록합니다.
 
-`failure_reasons`는 최종 FAIL을 만든 문장을 판정 순서대로 담습니다. `warnings`는
-판정을 반드시 실패시키지는 않는 이슈, `errors`는 계산을 끝낸 뒤 정상 FAIL 판정에
-사용한 error-severity 상세 기록을 담습니다. `errors` 필드는 파싱·계산·출력 문제로
-최종 판정을 만들지 못한 `status: ERROR`와 의미가 다릅니다. 보고서와 UI는 이를 각각
-`FAIL 사유`와 `세부 판정 기록`으로 구분합니다.
+### `reach`
 
-## `robot_metrics.csv`
+`reach.passed`와 로봇별 다음 값을 제공합니다.
 
-한 행이 한 로봇입니다.
+- `reach_radius_mm`: Config 허용 반경
+- `maximum_reach_mm`: 원본 TCP 절점과 Base 사이의 최대 3D 거리
+- `minimum_margin_mm`: 허용 반경 − 최대 거리
+- `utilization_ratio`: 최대 거리 / 허용 반경
+- `violation_point_count`, `first_violation_s`, `last_violation_s`
 
-| 필드 | 의미 |
-| --- | --- |
-| `robot_id` | 로봇 ID |
-| `completion_s` | 마지막 timestamp |
-| `deposition_time_s`, `travel_time_s`, `wait_time_s` | 원본 interval mode별 누적 시간 |
-| `deposition_ratio`, `travel_ratio`, `wait_ratio` | 각 누적 시간 / 해당 로봇 completion |
-| `deposition_length_mm`, `travel_length_mm` | Deposition/Travel interval의 3D 누적 길이 |
-| `mean_deposition_speed_mm_s`, `mean_travel_speed_mm_s` | 거리 / 해당 mode 시간; 시간이 0이면 빈 값 |
-| `reach_radius_mm` | 설정 Reach 반경 |
-| `maximum_reach_mm` | 최대 Base–TCP 3D 거리 |
-| `reach_margin_mm` | 설정 반경 - 최대 거리 |
-| `reach_utilization_ratio` | 최대 거리 / 설정 반경 |
-| `reach_violation_point_count` | 범위 밖 원본 절점 수 |
+### `collision`
 
-중요하게, CSV의 mode ratio 분모는 **로봇별 completion**입니다. UI의 공통 작업시간
-비율 그래프는 비교를 위해 **전체 makespan**을 분모로 사용할 수 있으므로 두 수치의
-의도를 구분해야 합니다.
+`arm_envelope`은 Base–TCP XY 중심선 사이의 최단거리를 사용합니다.
 
-## `collision_events.csv`
+```text
+required = arm_radius_A + arm_radius_B + arm_clearance_mm
+safety_margin = measured_centerline_distance - required
+```
 
-한 행이 병합된 한 충돌 event입니다. Event가 없으면 header만 있는 빈 CSV입니다.
+최소 safety margin, 그때의 중심선 거리·요구 거리·pair·시각, closest points와 세
+TCP의 XY 위치를 저장합니다. `tcp_radius`는 TCP 끝점 사이 XY 거리와 두 TCP 반경의
+합을 같은 방식으로 비교합니다. 검사를 비활성화해도 최소값은 지표로 계산하지만
+이벤트와 FAIL은 만들지 않습니다.
 
-| 필드 | 의미 |
-| --- | --- |
-| `event_id` | 결정론적으로 정렬한 1-based ID |
-| `type` | `ARM_ENVELOPE` 또는 `TCP_RADIUS` |
-| `robot_a`, `robot_b` | robot pair |
-| `start_s`, `end_s`, `duration_s` | 첫 true, 마지막 true와 그 차이 |
-| `minimum_distance_mm` | event 내부 최악 시점의 중심선 또는 TCP 거리 |
-| `required_distance_mm` | 해당 event 종류와 pair의 요구 거리 |
-| `minimum_safety_margin_mm` | 최소 거리 - 요구 거리 |
-| `minimum_capsule_surface_clearance_mm` | ARM_ENVELOPE의 실제 Capsule 표면 간격; TCP_RADIUS는 빈 값 |
-| `minimum_distance_time_s` | event 내부 최소 safety margin 발생 시각 |
-| `closest_a_x_mm`, `closest_a_y_mm` | Robot A 중심선 또는 TCP의 최단점 |
-| `closest_b_x_mm`, `closest_b_y_mm` | Robot B 중심선 또는 TCP의 최단점 |
+`collision_event_count`는 `collision_events.csv`의 전체 행 수이며 각 하위
+`event_count`는 유형별 행 수와 같습니다.
 
-짧은 false gap이 설정 한계 이하면 event 범위에 포함되지만 end는 마지막 true sample
-시각입니다. 최소 거리와 closest point는 병합된 event 전체에서 safety margin이 가장
-작은 true sample을 기준으로 기록합니다.
+### `shape`
 
-## `layer_metrics.csv`
+- `coverage = intersection volume / target layer volume`
+- `underfill_ratio = underfill volume / target layer volume`
+- `overfill_ratio = overfill volume / target layer volume`
+- `iou = intersection volume / union volume`
+- `failed_layer_count`, `evaluated_layer_count`, `failed_layer_ratio`
+- layer 적분 체적과 원본 mesh 체적 및 그 차이 비율
 
-한 행이 Target 또는 deposition이 존재하는 한 layer입니다.
+전체 지표는 layer 비율의 단순 평균이 아니라 면적×layer 높이로 누적한 체적 가중값입니다.
 
-| 필드 | 의미 |
-| --- | --- |
-| `layer_index` | 0-based layer index |
-| `z_bottom_mm`, `z_top_mm`, `z_slice_mm` | layer 경계와 Target slice 높이 |
-| `target_area_mm2` | Target 단면 면적 |
-| `deposited_area_mm2` | union된 명목 적층 면적 |
-| `intersection_area_mm2` | Target과 적층의 교집합 면적 |
-| `underfill_area_mm2` | Target 안에서 비어 있는 면적 |
-| `overfill_area_mm2` | Target 밖으로 적층된 면적 |
-| `coverage` | intersection / target |
-| `underfill_ratio` | underfill / target |
-| `overfill_ratio` | overfill / target; Target이 비면 빈 값 |
-| `iou` | intersection / union |
-| `passed` | `minimum_layer_iou` 통과 여부 |
+### `failure_reasons`와 `issues`
 
-전체 지표는 이 행들의 비율을 단순 평균한 값이 아니라 면적에 layer 높이를 곱한 체적
-합계로 다시 계산합니다.
+`failure_reasons`는 최종 FAIL을 설명하는 결정론적 요약입니다. 순서는 입력/process,
+Reach, Arm Envelope, TCP Radius, 형상, 속도입니다.
 
-## `warnings.csv`
-
-파일명은 기존 공개 인터페이스를 유지하지만 내용은 warning에만 한정되지 않습니다.
-판정 자동화에서는 반드시 `severity` 열을 함께 읽어야 합니다.
-
-| 필드 | 의미 |
-| --- | --- |
-| `severity` | `warning` 또는 `error` |
-| `code` | 안정적인 machine-readable 이슈 코드 |
-| `message` | 사람이 읽는 설명 |
-| `robot_id` | 해당 시 로봇 ID |
-| `start_s`, `end_s` | 해당 시 interval 또는 위반 시간 범위 |
-
-여기서 `error` severity는 반드시 프로세스가 중단됐다는 뜻이 아닙니다. Wait 이동,
-Reach, 설정에 따라 치명적인 속도 위반처럼 **전체 계산이 가능한 정상 FAIL 이슈**도
-이 파일에 기록됩니다. 실행 중단 오류는 `error.json`과 종료 코드로 구분합니다.
-
-## 사람이 읽는 파일
-
-### `validation_report.md`
-
-입력, Schedule, Robot Reach, Collision, Shape, Failure Reasons, warning/error, 산출물과
-해석 한계를 한 문서에 요약합니다.
-
-### `run.log`
-
-입력 로딩, trajectory 행 수, Target 면 수, makespan, 각 로봇의
-Deposition/Travel/Wait 시간·거리·속도,
-Reach 사용량, 충돌 sample/event 수, layer 범위, 형상 지표와 최종 판정 근거를 시간
-순서로 기록합니다. 결과값이 예상과 다르면 가장 먼저 확인할 진단 파일입니다.
-
-## 형상과 시각화 파일
-
-| 파일 | 생성 조건 | 의미 |
-| --- | --- | --- |
-| `deposited.stl` | `save_deposited_stl: true` | layer union polygon을 extrusion한 명목 적층 형상 |
-| `overview_xy.png` | 일반 모드 + `save_static_plots` | Base, workspace, trajectory, 충돌의 XY 개요 |
-| `gantt.png` | 일반 모드 + `save_static_plots` | 로봇별 mode timeline |
-| `shape_metrics_by_layer.png` | 일반 모드 + `save_static_plots` | layer별 Coverage/IoU 등 |
-| `worst_layer_comparison.png` | 일반 모드 + `save_static_plots` | 가장 나쁜 layer의 Target/Deposition 비교 |
-| `arm_envelope_worst_case.png` | 일반 모드 + `save_static_plots` | 최악 시점의 실제 Capsule, 판정 외곽선, closest points를 실제 XY 축척으로 표시 |
-| `replay.html` | `--replay` 또는 UI 별도 생성 | 3D 장면과 실제 축척 XY Capsule top-view를 포함한 self-contained Replay |
-
-`--headless`는 PNG와 HTML만 생략하며 핵심 판정 파일을 바꾸지 않습니다.
-
-## UI 실행 보조 파일
-
-UI에서 시작한 run에는 다음 내부 상태 파일이 있을 수 있습니다.
-
-| 파일 | 용도 |
-| --- | --- |
-| `dashboard_status.json` | Validation worker 진행·종료 상태 전달 |
-| `validation_inputs.json` | 실행 당시 세 입력 signature 기록 |
-| `replay_status.json` | Replay worker 진행 상태 |
-| `replay_manifest.json` | 생성 interval, frame 수, 시간·용량 정보 |
-
-이 파일들은 결과 판정을 재계산하는 입력이 아닙니다. 자동 분석에서는
-`summary.json`과 세 metrics CSV를 우선 사용하십시오.
-
-## `error.json`
-
-치명 오류 시 best-effort로 다음 구조를 기록합니다.
+`issues`는 warning과 정상 FAIL을 만든 비치명 violation을 하나의 구조로 저장합니다.
 
 ```json
 {
-  "schema_version": "2.0",
-  "validator_version": "1.0",
-  "status": "ERROR",
-  "code": "...",
+  "severity": "warning",
+  "code": "STATIONARY_TRAVEL",
   "message": "...",
+  "robot_id": 1,
+  "start_s": 10.0,
+  "end_s": 11.0
+}
+```
+
+`severity`는 `warning` 또는 `violation`입니다. 치명적 `ERROR`는 `issues`가 아니라
+예외와 `error.json`으로만 표현합니다.
+
+## `robot_metrics.csv`
+
+주요 열:
+
+- `completion_s`
+- `deposition_time_s`, `travel_time_s`, `wait_time_s`
+- `inactive_after_completion_s = makespan_s - completion_s`
+- `deposition_length_mm`, `travel_length_mm`
+- `mean_deposition_speed_mm_s`, `mean_travel_speed_mm_s`
+- Reach 반경, 최대 사용거리, margin, utilization, 위반 절점 수
+
+항상 다음 관계를 만족해야 합니다.
+
+```text
+Deposition + Travel + Wait = completion
+completion + inactive_after_completion = makespan
+mean mode speed = mode distance / mode time
+```
+
+거리와 시간은 모두 같은 left-row mode interval만 사용합니다. Travel 시간이 짧아도
+속도가 훨씬 빠르면 Travel 거리가 Deposition 거리보다 클 수 있습니다.
+
+## `collision_events.csv`
+
+각 행은 같은 유형·robot pair의 인접 충돌 sample을 `event_merge_gap_s` 기준으로
+병합한 이벤트입니다. 핵심 열은 유형, pair, 시작·종료·지속시간, 측정 최소거리,
+요구거리, 최소 safety margin과 그 시각입니다. Arm 이벤트에는 Capsule 표면 간격과
+양쪽 중심선 closest point도 기록합니다.
+
+이벤트 범위와 최솟값은 adaptive sample 기반입니다. 연속시간 swept collision의
+수학적 보증이 아닙니다.
+
+## `layer_metrics.csv`
+
+각 평가 layer의 Z 범위, Target·Deposition·교집합·Underfill·Overfill 면적,
+Coverage·Underfill·Overfill·IoU와 개별 PASS를 기록합니다. Target만 있거나
+Deposition만 있는 layer도 평가하며 둘 다 수치적으로 빈 layer만 건너뜁니다.
+
+포함된 절차적 positive benchmark는 동일한 centerline에서 Target과 trajectory를 함께
+생성하므로 모든 layer가 거의 같은 100% 수치를 보이는 것이 정상입니다. 이 데이터는
+일관성 검사용이지 알고리즘 간 형상 성능 비교용이 아닙니다. 독립 underfill,
+overfill, offset fixture에서는 오차가 증가할수록 지표가 단조롭게 나빠지는 회귀 검사를
+수행합니다.
+
+## 치명 오류 결과
+
+가능한 경우 output 폴더에 `error.json`과 `run.log`를 남깁니다.
+
+```json
+{
+  "schema_version": "3.0",
+  "validator_version": "1.0.0",
+  "status": "ERROR",
+  "code": "MISSING_TARGET",
+  "message": "target.stl is required.",
   "input_directory": "..."
 }
 ```
 
-디스크·권한 문제로 output 자체를 쓸 수 없다면 `error.json`도 없을 수 있으므로 CLI
-종료 코드와 stderr를 함께 보관해야 합니다.
+## 주문 생성 산출물
 
-## 종료 코드
+UI의 `산출물` 탭에서 다음 파일을 한 번에 하나씩 생성할 수 있습니다.
 
-| 코드 | 분류 | 예시 |
-| --- | --- | --- |
-| `0` | PASS | 활성 기준 모두 통과 |
-| `1` | 정상 FAIL | Reach, 충돌, 형상 또는 process 기준 위반 |
-| `2` | 입력 오류 | 누락 파일, Config/CSV 필드, Deposition layer/workspace 오류 |
-| `3` | Target 오류 | STL 로딩·유효성·좌표 문제 |
-| `4` | 계산 오류 | polygon/numerical/internal calculation 실패 |
-| `5` | 출력 오류 | 비어 있지 않은 explicit output, 쓰기 실패 |
+| 파일 | 내용 |
+| --- | --- |
+| `deposited.stl` | layer union polygon을 명목 layer 높이로 extrusion한 형상 |
+| `replay.html` | Target·trajectory 3D 장면과 실제 축척 XY Capsule top view |
 
-PowerShell에서는 실행 직후 `$LASTEXITCODE`로 확인할 수 있습니다.
+생성 전 `validation_inputs.json`과 현재 세 입력의 지문을 비교합니다. 다르면 생성을
+차단하고 Validation 재실행을 요구합니다. worker는 임시 파일을 완성한 뒤 최종 이름으로
+atomic rename합니다. 기존 파일이 있으면 명시적인 `다시 생성` 버튼으로 교체할 수
+있습니다.
 
-```powershell
-waam-validator run C:\data\my_job --headless --json
-$LASTEXITCODE
-```
+진행 상태와 생성 manifest는 `.waam_state/` 아래에 저장하며 결과 파일 목록과 artifact
+route에는 노출하지 않습니다. UI는 산출물 생성 중에만 이 작은 상태 파일을 polling하고
+완료 즉시 중단합니다.
 
-자동화에서는 코드 `0`과 `1`을 모두 **계산 완료**로 취급하고 `summary.json`의
-`status`를 읽는 것이 안전합니다. 코드 `2`~`5`는 미완료로 처리하십시오.
+결과 schema `1.1`과 `2.0`은 자동 변환하지 않습니다. 파일은 삭제하지 않지만 현재 UI는
+재실행이 필요하다고 안내합니다.
 
 [문서 안내로 돌아가기](README.md)

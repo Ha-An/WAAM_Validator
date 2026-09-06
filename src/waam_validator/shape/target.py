@@ -9,7 +9,7 @@ from typing import cast
 
 import numpy as np
 import trimesh
-from shapely import LineString, Polygon
+from shapely import LineString, MultiLineString, Polygon, get_parts, line_merge, set_precision
 from shapely.geometry.base import BaseGeometry
 
 from ..config.models import Config
@@ -17,6 +17,7 @@ from ..constants import EXTREME_COORDINATE_WARNING_MM, MODE_D
 from ..errors import TargetValidationError, ValidationMessages
 from ..models import TrajectorySet
 from ..progress import StageProgressCallback
+from .mesh_components import repair_normals_and_count_bodies
 from .polygon_utils import empty_polygon, normalize_polygon
 
 
@@ -54,13 +55,11 @@ def load_target_mesh(
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh.update_faces(mesh.unique_faces())
         mesh.remove_unreferenced_vertices()
-        trimesh.repair.fix_normals(mesh, multibody=True)  # type: ignore[no-untyped-call]
+        body_count = repair_normals_and_count_bodies(mesh)
         if config.validation.attempt_target_repair and not mesh.is_watertight:
-            trimesh.repair.fix_winding(mesh)  # type: ignore[no-untyped-call]
-            trimesh.repair.fix_inversion(mesh, multibody=True)
             trimesh.repair.fill_holes(mesh)
             mesh.remove_unreferenced_vertices()
-            trimesh.repair.fix_normals(mesh, multibody=True)  # type: ignore[no-untyped-call]
+            body_count = repair_normals_and_count_bodies(mesh)
             if messages is not None:
                 messages.warning(
                     "TARGET_REPAIR_APPLIED", "A limited target mesh repair was attempted."
@@ -71,6 +70,7 @@ def load_target_mesh(
         raise TargetValidationError("TARGET_LOAD_FAILED", str(exc)) from exc
     if mesh.is_empty or len(mesh.faces) == 0:
         raise TargetValidationError("TARGET_EMPTY", "No valid target triangles remain.")
+    mesh.metadata["waam_body_count"] = body_count
     if config.validation.require_watertight_target and not mesh.is_watertight:
         raise TargetValidationError(
             "TARGET_NOT_WATERTIGHT", "target.stl must be watertight after validation."
@@ -94,16 +94,23 @@ def validate_coordinate_consistency(
     config: Config,
 ) -> None:
     """Reject a clearly disjoint deposition/target XY frame."""
-    deposition_points: list[np.ndarray] = []
+    deposit_min = np.full(2, np.inf, dtype=np.float64)
+    deposit_max = np.full(2, -np.inf, dtype=np.float64)
+    found_deposition = False
     for trajectory in trajectories.robots:
-        for index, mode in enumerate(trajectory.mode[:-1]):
-            if int(mode) == int(MODE_D):
-                deposition_points.extend((trajectory.xyz_mm[index], trajectory.xyz_mm[index + 1]))
-    if not deposition_points:
+        deposition_indices = np.flatnonzero(trajectory.mode[:-1] == MODE_D)
+        if deposition_indices.size == 0:
+            continue
+        found_deposition = True
+        xyz = np.asarray(trajectory.xyz_mm, dtype=np.float64)
+        starts = xyz[deposition_indices, :2]
+        ends = xyz[deposition_indices + 1, :2]
+        deposit_min = np.minimum(deposit_min, np.minimum(starts.min(axis=0), ends.min(axis=0)))
+        deposit_max = np.maximum(deposit_max, np.maximum(starts.max(axis=0), ends.max(axis=0)))
+    if not found_deposition:
         return
-    points = np.asarray(deposition_points, dtype=np.float64)
-    deposit_min = points[:, :2].min(axis=0) - config.process.bead_width_mm / 2.0
-    deposit_max = points[:, :2].max(axis=0) + config.process.bead_width_mm / 2.0
+    deposit_min -= config.process.bead_width_mm / 2.0
+    deposit_max += config.process.bead_width_mm / 2.0
     target_min = np.asarray(mesh.bounds[0, :2], dtype=np.float64)
     target_max = np.asarray(mesh.bounds[1, :2], dtype=np.float64)
     overlaps = np.all(deposit_max >= target_min) and np.all(target_max >= deposit_min)
@@ -119,29 +126,15 @@ def _slice_once(
     z_mm: float,
     config: Config,
 ) -> BaseGeometry:
-    section = mesh.section(
-        plane_origin=np.array([0.0, 0.0, z_mm]),
-        plane_normal=np.array([0.0, 0.0, 1.0]),
-    )
-    if section is None:
-        return empty_polygon()
-    loop_polygons: list[BaseGeometry] = []
-    closure_tolerance = max(
+    loop_polygons = _horizontal_section_polygons(
+        mesh,
+        z_mm,
         config.shape_validation.polygon_snap_tolerance_mm,
-        config.collision.geometry_epsilon_mm,
+        max(
+            config.shape_validation.polygon_snap_tolerance_mm,
+            config.collision.geometry_epsilon_mm,
+        ),
     )
-    for discrete in section.discrete:
-        points = np.asarray(discrete, dtype=np.float64)
-        if len(points) < 3:
-            continue
-        xy = points[:, :2]
-        if np.linalg.norm(xy[0] - xy[-1]) > closure_tolerance:
-            line = LineString(xy)
-            if not line.is_ring:
-                continue
-        polygon = Polygon(xy)
-        if not polygon.is_empty:
-            loop_polygons.append(polygon)
     if not loop_polygons:
         return empty_polygon()
     geometry = _even_odd_union(loop_polygons)
@@ -152,19 +145,62 @@ def _slice_once(
     )
 
 
+def _horizontal_section_polygons(
+    mesh: trimesh.Trimesh,
+    z_mm: float,
+    snap_tolerance_mm: float,
+    closure_tolerance_mm: float,
+) -> list[BaseGeometry]:
+    """Build closed XY loops directly from triangle-plane line segments.
+
+    ``Trimesh.section`` turns segments into paths through optional SciPy graph
+    traversal. Horizontal validation only needs closed XY loops, so Shapely can
+    merge the raw segments without that heavyweight dependency.
+    """
+    lines = np.asarray(
+        trimesh.intersections.mesh_plane(  # type: ignore[no-untyped-call]
+            mesh,
+            plane_origin=np.array([0.0, 0.0, z_mm]),
+            plane_normal=np.array([0.0, 0.0, 1.0]),
+        ),
+        dtype=np.float64,
+    )
+    if lines.size == 0:
+        return []
+    segments = [segment[:, :2] for segment in lines if len(segment) == 2]
+    if not segments:
+        return []
+    linework: BaseGeometry = MultiLineString(segments)
+    if snap_tolerance_mm > 0:
+        linework = set_precision(linework, snap_tolerance_mm)
+    merged = line_merge(linework)
+    loop_polygons: list[BaseGeometry] = []
+    for part in get_parts(merged):
+        if not isinstance(part, LineString):
+            continue
+        points = np.asarray(part.coords, dtype=np.float64)
+        if len(points) < 3:
+            continue
+        if np.linalg.norm(points[0] - points[-1]) > closure_tolerance_mm:
+            continue
+        polygon = Polygon(points)
+        if not polygon.is_empty:
+            loop_polygons.append(polygon)
+    return loop_polygons
+
+
 def slice_target_mesh_at_z(
     mesh: trimesh.Trimesh,
     z_mm: float,
     snap_tolerance_mm: float,
 ) -> BaseGeometry:
     """Compatibility API for direct target slicing with a supplied snap tolerance."""
-    section = mesh.section(
-        plane_origin=np.array([0.0, 0.0, z_mm]),
-        plane_normal=np.array([0.0, 0.0, 1.0]),
+    polygons = _horizontal_section_polygons(
+        mesh,
+        z_mm,
+        snap_tolerance_mm,
+        max(snap_tolerance_mm, 1e-9),
     )
-    if section is None:
-        return empty_polygon()
-    polygons = [Polygon(np.asarray(path)[:, :2]) for path in section.discrete if len(path) >= 3]
     if not polygons:
         return empty_polygon()
     return normalize_polygon(_even_odd_union(polygons), snap_tolerance_mm, 1e-12)

@@ -19,7 +19,7 @@ def test_config_and_trajectory_compact_types(fixture_root: Path) -> None:
     config = load_config(job / "config.yaml")
     trajectories = load_trajectory_csv(job / "trajectory.csv", config)
     messages = validate_trajectory_set(trajectories, config)
-    assert not messages.errors
+    assert not messages.violations
     assert trajectories.row_count == 8
     assert trajectories.robots[0].time_s.dtype == np.float64
     assert trajectories.robots[0].xyz_mm.dtype == np.float32
@@ -48,6 +48,32 @@ def test_circular_workspace_is_loaded_and_must_lie_inside_robot_triangle(
     invalid_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     with pytest.raises(InputValidationError, match="inside the robot-base XY triangle"):
         load_config(invalid_path)
+
+
+def test_removed_output_block_is_rejected_with_migration_hint(
+    fixture_root: Path, tmp_path: Path
+) -> None:
+    data = yaml.safe_load(
+        (fixture_root / "collision_free" / "config.yaml").read_text(encoding="utf-8")
+    )
+    data["output"] = {"save_summary_json": True}
+    path = tmp_path / "old-output-config.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(InputValidationError, match="output section was removed"):
+        load_config(path)
+
+
+def test_all_tracked_job_configs_use_current_schema() -> None:
+    paths = [Path("config.yaml"), Path("examples/sample_job/config.yaml")]
+    paths.extend(
+        path for path in Path("tests").glob("**/config.yaml") if "output" not in path.parts
+    )
+
+    for path in paths:
+        config = load_config(path)
+        assert config.robots[0].arm_envelope_radius_mm > 0
+        assert "output:" not in path.read_text(encoding="utf-8")
 
 
 def test_optional_nco_home_and_process_metadata_are_loaded(

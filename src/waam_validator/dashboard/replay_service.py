@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -14,9 +15,12 @@ from .data import JobRecord, RunRecord
 
 REPLAY_PRESET_FRAMES: Final = {"fast": 300, "standard": 600, "detail": 1_200}
 MAX_REPLAY_FRAMES: Final = 2_000
-VALIDATION_INPUT_MANIFEST: Final = "validation_inputs.json"
-REPLAY_MANIFEST: Final = "replay_manifest.json"
-REPLAY_STATUS: Final = "replay_status.json"
+STATE_DIRECTORY: Final = ".waam_state"
+VALIDATION_STATUS: Final = Path(STATE_DIRECTORY) / "validation-status.json"
+REPLAY_MANIFEST: Final = Path(STATE_DIRECTORY) / "replay-manifest.json"
+REPLAY_STATUS: Final = Path(STATE_DIRECTORY) / "replay-status.json"
+DEPOSITED_STL_MANIFEST: Final = Path(STATE_DIRECTORY) / "deposited-stl-manifest.json"
+DEPOSITED_STL_STATUS: Final = Path(STATE_DIRECTORY) / "deposited-stl-status.json"
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,6 +40,37 @@ class ReplayEstimate:
         return asdict(self)
 
 
+@dataclass(slots=True, frozen=True)
+class DepositedStlEstimate:
+    """Conservative estimate for rebuilding the nominal deposited STL."""
+
+    time_low_s: float
+    time_high_s: float
+    size_low_bytes: int
+    size_high_bytes: int
+
+
+def estimate_deposited_stl(run: RunRecord) -> DepositedStlEstimate:
+    input_section = run.payload.get("input")
+    rows_raw = input_section.get("trajectory_rows") if isinstance(input_section, dict) else 0
+    rows = max(1, int(rows_raw)) if isinstance(rows_raw, int | float) else 1
+    central_size = max(100_000, rows * 165)
+    central_time = max(1.0, 1.0 + rows / 45_000.0)
+    prior = _read_json_dict(run.directory / DEPOSITED_STL_MANIFEST)
+    if prior is not None:
+        prior_seconds = _positive_number(prior.get("duration_s"))
+        prior_bytes = _positive_number(prior.get("size_bytes"))
+        if prior_seconds and prior_bytes:
+            central_time = prior_seconds
+            central_size = int(prior_bytes)
+    return DepositedStlEstimate(
+        time_low_s=max(1.0, central_time * 0.6),
+        time_high_s=max(2.0, central_time * 2.0),
+        size_low_bytes=max(1, int(central_size * 0.55)),
+        size_high_bytes=max(1, int(central_size * 1.8)),
+    )
+
+
 def recommended_interval_s(makespan_s: float, target_frames: int = 600) -> float:
     """Round upward to a human-friendly interval for the requested frame budget."""
     if not math.isfinite(makespan_s) or makespan_s <= 0:
@@ -53,6 +88,27 @@ def preset_interval_s(makespan_s: float, preset: str) -> float:
     return recommended_interval_s(makespan_s, REPLAY_PRESET_FRAMES.get(preset, 600))
 
 
+def _collision_keyframe_candidate_count(run_dir: Path, makespan_s: float) -> int:
+    """Count unique event minima and boundaries used by the Replay keyframe planner."""
+    path = run_dir / "collision_events.csv"
+    if not path.is_file():
+        return 0
+    values: set[float] = set()
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                for field in ("start_s", "end_s", "minimum_distance_time_s"):
+                    raw = row.get(field)
+                    if raw in (None, ""):
+                        continue
+                    value = float(raw)
+                    if math.isfinite(value) and 0.0 <= value <= makespan_s:
+                        values.add(value)
+    except (OSError, UnicodeError, ValueError, csv.Error):
+        return 0
+    return len(values)
+
+
 def estimate_replay(job: JobRecord, run: RunRecord, interval_s: float) -> ReplayEstimate:
     """Estimate output cost from frame count and source file sizes."""
     schedule = run.payload.get("schedule")
@@ -65,16 +121,37 @@ def estimate_replay(job: JobRecord, run: RunRecord, interval_s: float) -> Replay
         return ReplayEstimate(interval_s, 0, 0.0, 0.0, 0, 0, False, "간격을 확인하세요.")
 
     regular_frames = math.ceil(makespan / interval_s) + 1
-    critical_frames = event_count * 2
-    frame_count = regular_frames + critical_frames + math.ceil(regular_frames * 0.1)
-    frame_count = min(MAX_REPLAY_FRAMES, frame_count)
     allowed = regular_frames <= MAX_REPLAY_FRAMES
+    mode_keyframe_budget = min(
+        max(0, MAX_REPLAY_FRAMES - regular_frames),
+        math.ceil(regular_frames * 0.1),
+    )
+    collision_keyframe_budget = max(
+        0,
+        MAX_REPLAY_FRAMES - regular_frames - mode_keyframe_budget,
+    )
+    collision_candidates = _collision_keyframe_candidate_count(run.directory, makespan)
+    if collision_candidates == 0 and event_count > 0:
+        # Results without a readable event CSV cannot be exact, but retaining a
+        # conservative estimate keeps the UI useful for optional-output runs.
+        collision_candidates = event_count * 3
+    selected_collision_frames = min(collision_candidates, collision_keyframe_budget)
+    frame_count = min(
+        MAX_REPLAY_FRAMES,
+        regular_frames + mode_keyframe_budget + selected_collision_frames,
+    )
     warning = ""
     if not allowed:
         minimum = recommended_interval_s(makespan, MAX_REPLAY_FRAMES)
         warning = (
             f"정규 프레임이 안전 한도 {MAX_REPLAY_FRAMES:,}개를 초과합니다. "
             f"간격을 최소 {minimum:g}초로 늘리세요."
+        )
+    elif collision_candidates > collision_keyframe_budget:
+        warning = (
+            f"충돌 이벤트가 많아 {collision_candidates:,}개의 후보 시점 중 "
+            f"{collision_keyframe_budget:,}개를 선택합니다. 최악 충돌 시점과 "
+            "시간축 전반의 대표 경계를 우선 보존합니다."
         )
     elif frame_count > 1_200:
         warning = "상세 설정입니다. 생성 시간과 브라우저 메모리 사용량이 증가합니다."
@@ -104,63 +181,11 @@ def estimate_replay(job: JobRecord, run: RunRecord, interval_s: float) -> Replay
     )
 
 
-def input_signature(job_dir: Path) -> dict[str, dict[str, int]]:
-    """Capture a cheap identity check for the three immutable validation inputs."""
-    result: dict[str, dict[str, int]] = {}
-    for filename in ("config.yaml", "trajectory.csv", "target.stl"):
-        stat = (job_dir / filename).stat()
-        result[filename] = {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-    return result
-
-
-def write_validation_input_manifest(job_dir: Path, run_dir: Path) -> None:
-    write_json_atomic(
-        run_dir / VALIDATION_INPUT_MANIFEST,
-        {"schema_version": "2.0", "inputs": input_signature(job_dir)},
-    )
-
-
-def verify_validation_inputs(job_dir: Path, run_dir: Path) -> tuple[bool, str]:
-    """Check whether a completed schema 2.0 run still represents the current inputs."""
-    path = run_dir / VALIDATION_INPUT_MANIFEST
-    if not path.is_file():
-        summary_path = run_dir / "summary.json"
-        try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            schema_matches = (
-                isinstance(summary, dict) and summary.get("schema_version") == "2.0"
-            )
-            recorded_dir = Path(str((summary.get("input") or {}).get("directory", "")))
-            directory_matches = recorded_dir.expanduser().resolve() == job_dir.resolve()
-            newest_input = max(
-                (job_dir / filename).stat().st_mtime_ns
-                for filename in ("config.yaml", "trajectory.csv", "target.stl")
-            )
-            result_is_newer = summary_path.stat().st_mtime_ns >= newest_input
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return (
-                False,
-                "기존 결과에는 입력 지문이 없어 현재 입력과 일치하는지 확인할 수 없습니다.",
-            )
-        if not (schema_matches and directory_matches and result_is_newer):
-            return False, "검증 이후 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
-        return (
-            True,
-            "입력 지문 도입 전 생성된 결과이므로 입력 경로와 파일 수정 시각으로 확인했습니다.",
-        )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        recorded = payload.get("inputs") if isinstance(payload, dict) else None
-        current = input_signature(job_dir)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return False, f"입력 지문을 확인할 수 없습니다: {exc}"
-    if payload.get("schema_version") != "2.0" or recorded != current:
-        return False, "검증 이후 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
-    return True, ""
-
-
 def read_replay_manifest(run_dir: Path) -> dict[str, Any] | None:
-    path = run_dir / REPLAY_MANIFEST
+    return _read_json_dict(run_dir / REPLAY_MANIFEST)
+
+
+def _read_json_dict(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     try:
@@ -170,7 +195,17 @@ def read_replay_manifest(run_dir: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def read_replay_status(run_dir: Path) -> dict[str, Any] | None:
+    """Read the latest persistent Replay worker status, if present."""
+    return _read_json_dict(run_dir / REPLAY_STATUS)
+
+
+def read_deposited_stl_status(run_dir: Path) -> dict[str, Any] | None:
+    return _read_json_dict(run_dir / DEPOSITED_STL_STATUS)
+
+
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

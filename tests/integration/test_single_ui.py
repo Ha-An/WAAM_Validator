@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from dash.exceptions import PreventUpdate
 
+from waam_validator.dashboard.app import create_validator_app
 from waam_validator.dashboard.data import JobRecord
-from waam_validator.dashboard.replay_service import write_validation_input_manifest
-from waam_validator.dashboard.single_app import create_validator_app
+from waam_validator.provenance import write_validation_input_manifest
 
 
 class StubManager:
@@ -111,7 +111,7 @@ def test_single_job_ui_inspection_enables_same_context_run(
     layout = client.get("/_dash-layout")
     assert layout.status_code == 200
     assert b'"id":"job-dir-input"' in layout.data
-    assert b"v1.0" in layout.data
+    assert b"v1.0.0" in layout.data
     assert b'"debounce":false' in layout.data
     assert b'"id":"job-select"' not in layout.data
     assert b'"id":"rerun-button"' not in layout.data
@@ -125,6 +125,18 @@ def test_single_job_ui_inspection_enables_same_context_run(
     assert b"position: static" in css.data
     assert b".input-chart-grid .dash-graph" in css.data
     assert b"height: 320px !important" in css.data
+    assert b".artifact-tab-grid" in css.data
+    assert b".artifact-files-panel .artifact-list" in css.data
+    assert b".arm-snapshot-graph" in css.data
+    assert b"min-height: 960px" in css.data
+    assert b"width: min(1760px, calc(100vw - 2.4rem))" in css.data
+    assert b"height: min(82vh, 920px)" in css.data
+
+    remember_tab = _callback(app, "result-tab-store.data")
+    assert remember_tab("artifacts", {"run_name": "run-1"}) == {
+        "run_name": "run-1",
+        "value": "artifacts",
+    }
 
     inspect = _callback(app, "active-input-store.data")
     with pytest.raises(PreventUpdate):
@@ -183,7 +195,7 @@ def test_single_job_ui_inspection_enables_same_context_run(
     output = job / "output" / "stub-running"
     output.mkdir(parents=True)
     (output / "summary.json").write_text(
-        json.dumps({"schema_version": "2.0", "status": "PASS"}), encoding="utf-8"
+        json.dumps({"schema_version": "3.0", "status": "PASS"}), encoding="utf-8"
     )
     manager.finish(output)
     finished = _post_callback(
@@ -204,13 +216,13 @@ def test_single_job_ui_inspection_enables_same_context_run(
     assert finished["overall-progress"]["value"] == 100.0
 
 
-def test_recent_result_requires_matching_20_signature(fixture_root: Path, tmp_path: Path) -> None:
+def test_recent_result_requires_matching_30_signature(fixture_root: Path, tmp_path: Path) -> None:
     job = tmp_path / "motor"
     shutil.copytree(fixture_root / "collision_free", job)
     run = job / "output" / "2026-09-05_120000"
     run.mkdir(parents=True)
     (run / "summary.json").write_text(
-        json.dumps({"schema_version": "2.0", "status": "PASS"}), encoding="utf-8"
+        json.dumps({"schema_version": "3.0", "status": "PASS"}), encoding="utf-8"
     )
     write_validation_input_manifest(job, run)
 

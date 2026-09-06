@@ -1,4 +1,4 @@
-"""One-shot input inspection for dashboard validation jobs."""
+"""One-shot input inspection for a single UI validation job."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ InspectionStatus = Literal["READY", "WARNING", "EXPECTED_FAIL", "BLOCKED"]
 
 @dataclass(slots=True, frozen=True)
 class DashboardInputPaths:
-    """Resolved, allowlisted paths for one dashboard job."""
+    """Resolved, allowlisted paths for one UI job."""
 
     job_dir: Path
     config: Path
@@ -72,52 +72,6 @@ def _clean_path(value: str | Path) -> Path:
     if not text:
         raise DashboardDataError("경로를 입력하세요.")
     return Path(text).expanduser().resolve()
-
-
-def _is_allowed_job(root: Path, job_dir: Path) -> bool:
-    return job_dir == root or job_dir.parent == root
-
-
-def resolve_dashboard_inputs(
-    jobs_root: Path,
-    job_dir: str | Path,
-    config_path: str | Path | None = None,
-    trajectory_path: str | Path | None = None,
-    target_path: str | Path | None = None,
-) -> DashboardInputPaths:
-    """Resolve and validate one fixed-name, single-directory dashboard input set."""
-    root = jobs_root.expanduser().resolve()
-    if not root.is_dir():
-        raise DashboardDataError(f"작업 루트가 존재하지 않습니다: {root}")
-    resolved_job = _clean_path(job_dir)
-    if not resolved_job.is_dir():
-        raise DashboardDataError(f"작업 폴더가 존재하지 않습니다: {resolved_job}")
-    if not _is_allowed_job(root, resolved_job):
-        raise DashboardDataError(
-            "작업 폴더는 JOBS_ROOT 자체 또는 바로 아래의 직접 자식이어야 합니다."
-        )
-
-    supplied = (config_path, trajectory_path, target_path)
-    resolved_files: list[Path] = []
-    for filename, value in zip(REQUIRED_INPUT_FILES, supplied, strict=True):
-        candidate = (
-            _clean_path(value)
-            if value is not None and str(value).strip()
-            else (resolved_job / filename).resolve()
-        )
-        if candidate.name != filename:
-            raise DashboardDataError(f"입력 파일명은 정확히 {filename}이어야 합니다.")
-        if candidate.parent != resolved_job:
-            raise DashboardDataError("세 입력 파일은 작업 폴더에 함께 있어야 합니다.")
-        if not candidate.is_file():
-            raise DashboardDataError(f"입력 파일이 존재하지 않습니다: {candidate}")
-        resolved_files.append(candidate)
-    return DashboardInputPaths(
-        job_dir=resolved_job,
-        config=resolved_files[0],
-        trajectory=resolved_files[1],
-        target=resolved_files[2],
-    )
 
 
 def resolve_input_directory(job_dir: str | Path) -> DashboardInputPaths:
@@ -242,7 +196,7 @@ def _trajectory_details(trajectories: TrajectorySet, config: Config) -> JsonDict
 def _target_details(mesh: Any) -> JsonDict:
     bounds = np.asarray(mesh.bounds, dtype=np.float64)
     extents = np.asarray(mesh.extents, dtype=np.float64)
-    body_count_raw = getattr(mesh, "body_count", 1)
+    body_count_raw = mesh.metadata.get("waam_body_count", 1)
     body_count = int(body_count_raw) if isinstance(body_count_raw, int | np.integer) else 1
     volume = float(abs(mesh.volume))
     return {
@@ -292,7 +246,7 @@ def inspect_dashboard_input_bundle(
             messages = validate_trajectory_set(trajectories, config)
             trajectory_details = _trajectory_details(trajectories, config)
             warnings.extend(_issue_dict(issue) for issue in messages.warnings)
-            expected_failures.extend(_issue_dict(issue) for issue in messages.errors)
+            expected_failures.extend(_issue_dict(issue) for issue in messages.violations)
         except WaamValidatorError as exc:
             blocking.append({"code": exc.code, "message": exc.message, "source": "trajectory.csv"})
 
@@ -333,8 +287,3 @@ def inspect_dashboard_input_bundle(
         blocking_errors=blocking,
     )
     return inspection, config, trajectories, mesh
-
-
-def inspect_dashboard_inputs(paths: DashboardInputPaths) -> InputInspection:
-    """Read and inspect inputs once without collision, slicing, or output writes."""
-    return inspect_dashboard_input_bundle(paths)[0]

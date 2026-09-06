@@ -1,9 +1,8 @@
-"""Read-only discovery and result loading for the local dashboard."""
+"""Read-only result and artifact loading for the single-job local UI."""
 
 from __future__ import annotations
 
 import json
-import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +13,7 @@ import polars as pl
 
 from ..config.loader import load_config
 from ..errors import WaamValidatorError
+from ..provenance import RESULT_SCHEMA_VERSION, verify_validation_inputs
 
 JsonDict = dict[str, Any]
 
@@ -25,19 +25,10 @@ ALLOWED_ARTIFACTS: Final = frozenset(
         "robot_metrics.csv",
         "collision_events.csv",
         "layer_metrics.csv",
-        "warnings.csv",
         "validation_report.md",
         "deposited.stl",
         "run.log",
-        "overview_xy.png",
-        "gantt.png",
-        "shape_metrics_by_layer.png",
-        "worst_layer_comparison.png",
-        "arm_envelope_worst_case.png",
         "replay.html",
-        "replay_manifest.json",
-        "dashboard_status.json",
-        "replay_status.json",
         "validation_inputs.json",
     }
 )
@@ -49,6 +40,7 @@ CSV_COLUMNS: Final = {
         "deposition_time_s",
         "travel_time_s",
         "wait_time_s",
+        "inactive_after_completion_s",
         "deposition_length_mm",
         "travel_length_mm",
         "mean_deposition_speed_mm_s",
@@ -86,12 +78,11 @@ CSV_COLUMNS: Final = {
         "iou",
         "passed",
     ),
-    "warnings.csv": ("severity", "code", "message", "robot_id", "start_s", "end_s"),
 }
 
 
 class DashboardDataError(ValueError):
-    """Raised when a dashboard path or result artifact is unsafe or invalid."""
+    """Raised when a UI path or result artifact is unsafe or invalid."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,32 +106,6 @@ class RunRecord:
     @property
     def run_name(self) -> str:
         return self.directory.name
-
-
-def is_job_directory(path: Path) -> bool:
-    """Return whether a directory contains the fixed validator inputs."""
-    if not path.is_dir():
-        return False
-    resolved = path.resolve()
-    return all(
-        (resolved / name).is_file() and (resolved / name).resolve().parent == resolved
-        for name in REQUIRED_INPUT_FILES
-    )
-
-
-def discover_jobs(jobs_root: Path) -> list[JobRecord]:
-    """Discover the root itself or validation-ready direct child directories."""
-    root = jobs_root.expanduser().resolve()
-    if not root.is_dir():
-        raise DashboardDataError(f"작업 루트가 존재하지 않습니다: {root}")
-    if is_job_directory(root):
-        return [JobRecord(root.name, root)]
-    jobs = []
-    for child in root.iterdir():
-        resolved_child = child.resolve()
-        if resolved_child.parent == root and is_job_directory(resolved_child):
-            jobs.append(JobRecord(child.name, resolved_child))
-    return sorted(jobs, key=lambda item: item.name.casefold())
 
 
 def _run_sort_key(path: Path) -> tuple[int, float, int, str]:
@@ -221,9 +186,9 @@ def load_latest_run(job_dir: Path) -> RunRecord | None:
         return RunRecord(run_dir, status, payload, _completed_label(run_dir))
     except DashboardDataError as exc:
         payload = {
-            "schema_version": "2.0",
+            "schema_version": RESULT_SCHEMA_VERSION,
             "status": "ERROR",
-            "code": "DASHBOARD_DATA_ERROR",
+            "code": "UI_DATA_ERROR",
             "message": str(exc),
         }
         return RunRecord(run_dir, "ERROR", payload, _completed_label(run_dir), str(exc))
@@ -240,6 +205,21 @@ def load_run_directory(run_dir: Path) -> RunRecord:
     if status not in {"PASS", "FAIL", "ERROR"}:
         raise DashboardDataError(f"알 수 없는 status 값입니다: {status}")
     return RunRecord(resolved, status, payload, _completed_label(resolved))
+
+
+def load_latest_matching_run(job_dir: Path) -> RunRecord | None:
+    """Return the newest schema-compatible result for the current input signature."""
+    for run_dir in completed_run_directories(job_dir):
+        if not (run_dir / "summary.json").is_file():
+            continue
+        try:
+            run = load_run_directory(run_dir)
+        except DashboardDataError:
+            continue
+        matches, _ = verify_validation_inputs(job_dir, run_dir)
+        if run.payload.get("schema_version") == RESULT_SCHEMA_VERSION and matches:
+            return run
+    return None
 
 
 def load_thresholds(job_dir: Path) -> JsonDict:
@@ -275,68 +255,43 @@ def read_csv_records(run_dir: Path, filename: str) -> list[JsonDict]:
         raise DashboardDataError(f"{filename}을 읽을 수 없습니다: {exc}") from exc
 
 
-def read_csv_page(
+def read_csv_window(
     run_dir: Path,
     filename: str,
     *,
-    page: int,
-    page_size: int,
+    start: int,
+    end: int,
     sort_by: list[dict[str, str]] | None = None,
-    equals: dict[str, object] | None = None,
 ) -> tuple[list[JsonDict], int]:
-    """Read, filter, sort and slice a result CSV on the server."""
+    """Read one AG Grid row window and return the exact filtered row count."""
     if filename not in ALLOWED_ARTIFACTS or not filename.endswith(".csv"):
         raise DashboardDataError(f"허용되지 않은 CSV입니다: {filename}")
     path = run_dir / filename
     if not path.is_file():
-        return [], 1
+        return [], 0
     try:
         frame = pl.read_csv(
             path,
             columns=list(CSV_COLUMNS.get(filename, ())),
             infer_schema_length=1000,
         )
-        for column, value in (equals or {}).items():
-            if value not in (None, "", "ALL") and column in frame.columns:
-                frame = frame.filter(pl.col(column) == value)
-        for item in reversed(sort_by or []):
-            column = item.get("column_id", "")
-            if column in frame.columns:
-                frame = frame.sort(column, descending=item.get("direction") == "desc")
-        size = max(1, page_size)
-        count = frame.height
-        page_count = max(1, math.ceil(count / size))
-        safe_page = min(max(0, page), page_count - 1)
-        return frame.slice(safe_page * size, size).to_dicts(), page_count
+        sort_columns = [
+            item.get("column_id", "")
+            for item in (sort_by or [])
+            if item.get("column_id", "") in frame.columns
+        ]
+        if sort_columns:
+            sort_directions = [
+                item.get("direction") == "desc"
+                for item in (sort_by or [])
+                if item.get("column_id", "") in frame.columns
+            ]
+            frame = frame.sort(sort_columns, descending=sort_directions)
+        safe_start = max(0, start)
+        size = max(1, end - safe_start)
+        return frame.slice(safe_start, size).to_dicts(), frame.height
     except (OSError, pl.exceptions.PolarsError) as exc:
         raise DashboardDataError(f"{filename}을 읽을 수 없습니다: {exc}") from exc
-
-
-def resolve_job(jobs_root: Path, job_name: str) -> JobRecord:
-    """Resolve a browser-supplied job name through the discovered allowlist."""
-    for job in discover_jobs(jobs_root):
-        if job.name == job_name:
-            return job
-    raise DashboardDataError(f"알 수 없는 작업입니다: {job_name}")
-
-
-def resolve_artifact(
-    jobs_root: Path,
-    job_name: str,
-    run_name: str,
-    filename: str,
-) -> Path:
-    """Resolve an allowlisted artifact and reject path traversal."""
-    if filename not in ALLOWED_ARTIFACTS:
-        raise DashboardDataError(f"허용되지 않은 산출물입니다: {filename}")
-    job = resolve_job(jobs_root, job_name)
-    output_root = (job.path / "output").resolve()
-    candidate = (output_root / run_name / filename).resolve()
-    if not candidate.is_relative_to(output_root) or candidate.parent.parent != output_root:
-        raise DashboardDataError("허용된 결과 폴더 밖의 경로입니다.")
-    if not candidate.is_file():
-        raise DashboardDataError(f"산출물이 존재하지 않습니다: {filename}")
-    return candidate
 
 
 def resolve_single_job_artifact(job_dir: Path, run_name: str, filename: str) -> Path:

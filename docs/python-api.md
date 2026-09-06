@@ -12,16 +12,11 @@ from waam_validator import ValidationProgress, run_validation
 
 
 def show_progress(event: ValidationProgress) -> None:
-    print(
-        f"{event.stage}: {event.overall_progress:.1%} "
-        f"({event.message})"
-    )
+    print(f"{event.stage}: {event.overall_progress:.1%} ({event.message})")
 
 
 result = run_validation(
     Path(r"C:\data\my_job"),
-    headless=True,
-    generate_replay=False,
     progress_callback=show_progress,
 )
 
@@ -37,8 +32,6 @@ run_validation(
     input_dir: Path,
     output_dir: Path | None = None,
     *,
-    headless: bool = False,
-    generate_replay: bool = False,
     progress_callback: Callable[[ValidationProgress], None] | None = None,
 ) -> ValidationResult
 ```
@@ -52,7 +45,7 @@ FAIL은 예외를 발생시키지 않고 `ValidationResult(status="FAIL")`을 �
 
 | 필드 | 의미 |
 | --- | --- |
-| `stage` | `loading_inputs`, `collision`, `deposition`, `target_slicing`, `shape_metrics`, `artifacts`, `completed` |
+| `stage` | `loading_inputs`, `collision`, `deposition`, `target_slicing`, `shape_metrics`, `results`, `completed` |
 | `message` | 현재 작업의 사용자용 설명 |
 | `stage_progress` | 현재 단계의 0..1 진행률 |
 | `overall_progress` | 전체 pipeline의 0..1 진행률 |
@@ -90,7 +83,7 @@ events = run_collision_simulation(trajectories, config)
 deposited_layers = build_deposited_layers(trajectories, config)
 ```
 
-`validate_trajectory_set()`은 warning과 실행 가능한 process error를
+`validate_trajectory_set()`은 warning과 실행 가능한 process violation을
 `ValidationMessages`로 반환합니다. Deposition layer/workspace처럼 계속 계산할 수 없는 문제는
 `InputValidationError`를 발생시킵니다. 단계별 API를 직접 조합할 때는 반환 메시지를
 무시하지 말아야 합니다.
@@ -110,7 +103,7 @@ deposited_layers = build_deposited_layers(trajectories, config)
 | `build_deposited_layers` | trajectory set, config | layer index → Shapely geometry |
 | `slice_target_layers` | Trimesh, layer indices, config | layer index → Target geometry |
 | `compute_shape_metrics` | deposited/target mapping, config | `ShapeMetrics`, `LayerMetrics` list |
-| `run_validation` | 입력·출력 경로와 옵션 | 전체 `ValidationResult` 및 산출물 |
+| `run_validation` | 입력·출력 경로와 progress callback | 전체 `ValidationResult`와 핵심 결과 파일 |
 
 `build_deposited_layers`, `slice_target_layers`, `compute_shape_metrics`,
 `run_collision_simulation`은 선택적인 단계 진행 callback도 받습니다. 이 callback의
@@ -133,8 +126,11 @@ Trajectory는 대형 CSV의 메모리 사용량을 줄이기 위해 다음 dtype
 | `RobotTrajectory.mode` | NumPy `uint8` (`T=0`, `D=1`, `W=2`) |
 
 주요 결과 객체는 typed `slots=True` dataclass입니다. `ValidationResult`에는 schedule,
-reach, collision, shape, layer metrics, warning/error와 Failure Reasons가 포함됩니다.
+reach, collision, shape, layer metrics, warning/violation과 Failure Reasons가 포함됩니다.
 `summary_dict()`는 `summary.json`과 같은 직렬화 구조를 반환합니다.
+
+`run_validation()`은 정적 PNG, `deposited.stl`, `replay.html`을 만들지 않습니다.
+추가 산출물은 UI worker의 입력 지문 확인과 atomic rename 절차를 통해 생성됩니다.
 
 ## 예외와 종료 코드 대응
 

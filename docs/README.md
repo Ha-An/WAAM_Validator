@@ -1,32 +1,27 @@
 # WAAM Validator 문서
 
-이 폴더는 루트 [README](../README.md)의 빠른 시작보다 상세한 운용·판정·개발
-정보를 제공합니다.
+루트 [README](../README.md)는 설치와 첫 실행만 간단히 설명합니다. 세부 내용은 목적에
+맞는 문서를 사용하십시오.
 
-## 목적별 문서
-
-| 알고 싶은 내용 | 문서 |
+| 목적 | 문서 |
 | --- | --- |
-| 설치하고 예제 또는 실제 작업을 처음 실행하는 방법 | [설치 및 시작하기](getting-started.md) |
-| 알고리즘 결과를 Validator 입력으로 만드는 정확한 규격 | [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md) |
-| `config.yaml`의 필드와 유효 범위 | [Config 참조](config-reference.md) |
-| PASS/FAIL이 어떤 계산을 거쳐 결정되는지 | [검증 방법과 판정 기준](validation-method.md) |
-| 로컬 UI에서 입력 확인, 실행, 결과와 Replay를 보는 방법 | [UI 사용 안내](ui-guide.md) |
-| `summary.json`, CSV, STL, PNG와 종료 코드를 해석하는 방법 | [결과 및 산출물 참조](results-reference.md) |
-| Python 코드에서 Validator를 호출하는 방법 | [Python API](python-api.md) |
-| 저장소 구조와 테스트·품질 검사를 실행하는 방법 | [개발자 안내](development.md) |
-| 애플리케이션 버전과 Config·결과 호환성의 차이 | [버전 및 호환성](versioning.md) |
-| 현재 코드의 실제 모델·성능·로그·Git 준비 상태 | [릴리스 준비 및 검증 기록](release-readiness.md) |
-| fixture·benchmark·실제 모델 폴더의 차이 | [검증 데이터 안내](../tests/README.md) |
-| 10개 절차적 모델의 입력 생성 방법과 실제 Validation 결과 | [10개 모델 benchmark 결과](../tests/benchmark_results.md) |
+| 설치하고 첫 작업 실행 | [설치 및 시작](getting-started.md) |
+| 경로 생성 알고리즘의 출력 규격 확인 | [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md) |
+| `config.yaml` 필드와 단위 확인 | [Config 참조](config-reference.md) |
+| PASS/FAIL 계산 원리 확인 | [검증 방법](validation-method.md) |
+| 입력 준비·진행·결과 화면 사용 | [UI 안내](ui-guide.md) |
+| JSON/CSV/보고서 해석 | [결과 참조](results-reference.md) |
+| Python에서 직접 호출 | [Python API](python-api.md) |
+| 테스트·정적 검사·패키징 | [개발자 안내](development.md) |
+| 앱 버전과 결과 schema 구분 | [버전 관리](versioning.md) |
+| 포함된 검증 입력과 benchmark | [검증 데이터](../tests/README.md) |
 
-## 권장 읽기 순서
+권장 순서는 다음과 같습니다.
 
-- **사용자:** 시작하기 → 입력물 인터페이스 → UI 사용 안내 → 결과 참조
-- **경로 생성 알고리즘 개발자:** 입력물 인터페이스 → Config 참조 → 검증 방법
-- **자동화 개발자:** 시작하기 → 결과 참조 → Python API
-- **프로젝트 기여자:** 검증 방법 → Python API → 개발자 안내 → 릴리스 준비 기록
+- 사용자: 설치 및 시작 → UI 안내 → 결과 참조
+- 경로 생성 알고리즘 개발자: 입력물 인터페이스 → Config 참조 → 검증 방법
+- 자동화 개발자: 결과 참조 → Python API
+- 기여자: 검증 방법 → Python API → 개발자 안내 → 버전 관리
 
-문서와 실제 코드가 다르게 보이면 `src/waam_validator`의 Config 모델과 테스트가 최종
-동작 기준입니다. 차이를 발견하면 README와 관련 문서도 코드 변경과 함께 갱신해야
-합니다.
+문서와 코드가 다를 경우 `src/waam_validator`의 Pydantic Config 모델, 결과 writer와
+자동 테스트가 최종 동작 기준입니다.

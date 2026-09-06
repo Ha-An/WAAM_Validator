@@ -84,17 +84,6 @@ class ShapeValidationConfig(FrozenModel):
     area_epsilon_mm2: float = Field(gt=0)
 
 
-class OutputConfig(FrozenModel):
-    save_summary_json: bool
-    save_report_markdown: bool
-    save_collision_events_csv: bool
-    save_robot_metrics_csv: bool
-    save_layer_metrics_csv: bool
-    save_deposited_stl: bool
-    save_static_plots: bool
-    animation_sample_interval_s: float = Field(gt=0)
-
-
 class Config(FrozenModel):
     simulation: SimulationConfig
     robots: tuple[RobotConfig, RobotConfig, RobotConfig]
@@ -103,7 +92,6 @@ class Config(FrozenModel):
     collision: CollisionConfig
     validation: ValidationConfig
     shape_validation: ShapeValidationConfig
-    output: OutputConfig
 
     @model_validator(mode="after")
     def validate_robot_set(self) -> Config:

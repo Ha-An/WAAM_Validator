@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from waam_validator.dashboard.data import JobRecord, RunRecord
+from waam_validator.dashboard.deposited_stl_worker import run_deposited_stl_worker
+from waam_validator.dashboard.replay_service import (
+    DEPOSITED_STL_MANIFEST,
+    REPLAY_MANIFEST,
+    VALIDATION_STATUS,
+)
 from waam_validator.dashboard.replay_worker import run_replay_worker
 from waam_validator.dashboard.runner import (
+    ReplayAlreadyRunningError,
     ReplayRunManager,
     ValidationAlreadyRunningError,
     ValidationRunManager,
@@ -58,7 +63,9 @@ def test_manager_allows_only_one_process(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert snapshot["job_name"] == "job"
 
     output.mkdir(parents=True)
-    (output / "dashboard_status.json").write_text(
+    status_path = output / VALIDATION_STATUS
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text(
         json.dumps({"state": "FINISHED", "stage": "completed", "verdict": "PASS"}),
         encoding="utf-8",
     )
@@ -98,7 +105,7 @@ def test_worker_writes_terminal_state_for_real_fixture(tmp_path: Path) -> None:
     output = tmp_path / "dashboard-worker"
     exit_code = run_worker(Path("examples/sample_job"), output)
 
-    status = json.loads((output / "dashboard_status.json").read_text(encoding="utf-8"))
+    status = json.loads((output / VALIDATION_STATUS).read_text(encoding="utf-8"))
     assert exit_code == 0
     assert status["state"] == "FINISHED"
     assert status["verdict"] == "PASS"
@@ -111,24 +118,10 @@ def test_worker_maps_input_failure_to_error(tmp_path: Path) -> None:
     output = tmp_path / "failed-worker"
     exit_code = run_worker(tmp_path / "missing-job", output)
 
-    status = json.loads((output / "dashboard_status.json").read_text(encoding="utf-8"))
+    status = json.loads((output / VALIDATION_STATUS).read_text(encoding="utf-8"))
     assert exit_code == 2
     assert status["verdict"] == "ERROR"
     assert status["code"] == "MISSING_CONFIG"
-
-
-def test_ui_worker_always_keeps_the_summary_needed_by_result_screen(
-    fixture_root: Path, tmp_path: Path
-) -> None:
-    job = tmp_path / "summary-disabled"
-    shutil.copytree(fixture_root / "collision_free", job)
-    config = yaml.safe_load((job / "config.yaml").read_text(encoding="utf-8"))
-    config["output"]["save_summary_json"] = False
-    (job / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    output = tmp_path / "ui-result"
-
-    assert run_worker(job, output) == 0
-    assert (output / "summary.json").is_file()
 
 
 def test_replay_worker_generates_manifest_after_validation(tmp_path: Path) -> None:
@@ -137,31 +130,32 @@ def test_replay_worker_generates_manifest_after_validation(tmp_path: Path) -> No
     assert run_worker(job, output) == 0
 
     assert run_replay_worker(job, output, 10.0) == 0
-    manifest = json.loads((output / "replay_manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output / REPLAY_MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "3.0"
     assert manifest["status"] == "READY"
     assert manifest["interval_s"] == 10.0
     assert manifest["frame_count"] > 1
     assert manifest["size_bytes"] == (output / "replay.html").stat().st_size
 
 
-def test_replay_manager_starts_and_cancels_process(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class CancellableProcess(FakeProcess):
-        def terminate(self) -> None:
-            self.return_code = -15
+def test_deposited_stl_worker_generates_atomic_optional_artifact(tmp_path: Path) -> None:
+    output = tmp_path / "stl-worker"
+    job = Path("examples/sample_job")
+    assert run_worker(job, output) == 0
 
-        def wait(self, timeout: float) -> int:
-            del timeout
-            return int(self.return_code or 0)
+    assert run_deposited_stl_worker(job, output) == 0
+    manifest = json.loads((output / DEPOSITED_STL_MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "3.0"
+    assert manifest["status"] == "READY"
+    assert manifest["size_bytes"] == (output / "deposited.stl").stat().st_size
+    assert not (output / ".deposited.stl.tmp").exists()
 
-        def kill(self) -> None:
-            self.return_code = -9
 
-    fake = CancellableProcess()
+def test_replay_manager_starts_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake = FakeProcess()
     command: list[str] = []
 
-    def fake_popen(args: list[str], **_kwargs: Any) -> CancellableProcess:
+    def fake_popen(args: list[str], **_kwargs: Any) -> FakeProcess:
         command.extend(args)
         return fake
 
@@ -176,7 +170,34 @@ def test_replay_manager_starts_and_cancels_process(
     manager.start(job, run, 180.0)
     assert "waam_validator.dashboard.replay_worker" in command
     assert manager.snapshot()["running"] is True
-    assert manager.cancel() is True
-    snapshot = manager.snapshot()
-    assert snapshot["running"] is False
-    assert snapshot["verdict"] == "CANCELLED"
+
+
+def test_derived_artifacts_share_one_worker_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    first = FakeProcess()
+
+    def first_popen(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return first
+
+    monkeypatch.setattr("waam_validator.dashboard.runner.subprocess.Popen", first_popen)
+    job_path = tmp_path / "job"
+    run_path = job_path / "output" / "2026-01-01_000000"
+    run_path.mkdir(parents=True)
+    job = JobRecord("job", job_path)
+    run = RunRecord(run_path, "PASS", {}, "now")
+    manager = ReplayRunManager("python")
+
+    manager.start(job, run, 180.0)
+    with pytest.raises(ReplayAlreadyRunningError):
+        manager.start_deposited_stl(job, run)
+
+    first.return_code = 0
+    second = FakeProcess()
+    monkeypatch.setattr(
+        "waam_validator.dashboard.runner.subprocess.Popen",
+        lambda *_args, **_kwargs: second,
+    )
+    manager.start_deposited_stl(job, run)
+    with pytest.raises(ReplayAlreadyRunningError):
+        manager.start(job, run, 180.0)

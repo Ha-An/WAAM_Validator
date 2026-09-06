@@ -30,9 +30,7 @@ def _point2(value: np.ndarray) -> tuple[float, float]:
 def _cross2d(
     left: npt.NDArray[np.float64], right: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    result: npt.NDArray[np.float64] = (
-        left[..., 0] * right[..., 1] - left[..., 1] * right[..., 0]
-    )
+    result: npt.NDArray[np.float64] = left[..., 0] * right[..., 1] - left[..., 1] * right[..., 0]
     return result
 
 
@@ -120,9 +118,7 @@ def check_arm_envelope_xy_batch(
     denominator = _cross2d(direction_a, direction_b)
     numerical_tolerance = (
         np.finfo(np.float64).eps
-        * np.maximum(
-            np.linalg.norm(direction_a, axis=1) * np.linalg.norm(direction_b, axis=1), 1.0
-        )
+        * np.maximum(np.linalg.norm(direction_a, axis=1) * np.linalg.norm(direction_b, axis=1), 1.0)
         * 16.0
     )
     non_parallel = np.abs(denominator) > numerical_tolerance
@@ -146,9 +142,7 @@ def check_arm_envelope_xy_batch(
         & (parameter_b <= 1.0)
     )
     if np.any(intersects):
-        point = (
-            repeated_a[intersects] + parameter_a[intersects, None] * direction_a[intersects]
-        )
+        point = repeated_a[intersects] + parameter_a[intersects, None] * direction_a[intersects]
         closest_a[intersects] = point
         closest_b[intersects] = point
         distance[intersects] = 0.0
@@ -156,9 +150,7 @@ def check_arm_envelope_xy_batch(
     surface_clearance = distance - float(radius_a_mm + radius_b_mm)
     safety_margin = distance - required
     collision = (
-        safety_margin <= epsilon_mm
-        if touching_is_collision
-        else safety_margin < -epsilon_mm
+        safety_margin <= epsilon_mm if touching_is_collision else safety_margin < -epsilon_mm
     )
     return ArmEnvelopeBatchResult(
         collision=collision,
