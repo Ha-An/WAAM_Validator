@@ -57,6 +57,20 @@ def load_config(path: Path) -> Config:
             )
     robots = data.get("robots")
     if isinstance(robots, list):
+        legacy_reach_ids = [
+            str(robot.get("id", "?"))
+            for robot in robots
+            if isinstance(robot, dict) and "reach_radius_mm" in robot
+        ]
+        if legacy_reach_ids:
+            raise InputValidationError(
+                "INVALID_CONFIG_SCHEMA",
+                "reach_radius_mm is no longer supported because Reach is now measured "
+                "only in the World XY plane. Rename it to positive "
+                "xy_reach_radius_mm on robot ID(s): "
+                + ", ".join(legacy_reach_ids)
+                + ".",
+            )
         missing_robot_ids = [
             str(robot.get("id", "?"))
             for robot in robots
@@ -67,6 +81,19 @@ def load_config(path: Path) -> Config:
                 "INVALID_CONFIG_SCHEMA",
                 "Every robot requires positive arm_envelope_radius_mm for the 2D "
                 f"Capsule model; missing on robot ID(s): {', '.join(missing_robot_ids)}.",
+            )
+        missing_xy_reach_ids = [
+            str(robot.get("id", "?"))
+            for robot in robots
+            if isinstance(robot, dict) and "xy_reach_radius_mm" not in robot
+        ]
+        if missing_xy_reach_ids:
+            raise InputValidationError(
+                "INVALID_CONFIG_SCHEMA",
+                "Every robot requires positive xy_reach_radius_mm for the World XY "
+                "Reach model; missing on robot ID(s): "
+                + ", ".join(missing_xy_reach_ids)
+                + ".",
             )
     try:
         return Config.model_validate(data)

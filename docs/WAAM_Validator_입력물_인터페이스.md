@@ -40,7 +40,7 @@ validation_job/
 - `config.yaml`의 `home_xyz_mm`: 선택적인 TCP 명목 대기 위치의 World 좌표
 - `target.stl`의 vertex: World 좌표의 mm 단위 점
 
-Base는 Reach와 단순 팔 선분의 시작점이고, Home은 TCP가 대기하는 위치다. 두 좌표를
+Base는 XY Reach와 단순 팔 선분의 시작점이고, Home은 TCP가 대기하는 위치다. 두 좌표를
 같은 개념으로 사용하면 안 된다. 현재 Validator는 Home을 시각적·경로 생성 참조로
 사용하며 trajectory 시작·종료 좌표와의 일치를 강제하지 않는다.
 
@@ -194,7 +194,7 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 | 그룹 | 주요 역할 |
 |---|---|
 | `simulation` | 적응형 충돌 샘플의 시간·TCP 이동 간격, 이벤트 병합과 처리 묶음 크기 |
-| `robots` | ID 1·2·3의 고정 Base, 선택적 Home TCP, TCP 반경, 2D Arm Capsule 반경과 3D Reach 반경 |
+| `robots` | ID 1·2·3의 고정 Base, 선택적 Home TCP, TCP 반경, 2D Arm Capsule 반경과 XY Reach 반경 |
 | `process` | Deposition(적층)·Travel(비적층 이동) 기준 속도, 레이어 높이, 비드 폭, 빌드 평면과 TCP Z 해석 기준 |
 | `workspace` | World XY 평면에서 파트를 적층할 수 있는 필수 원형 영역 |
 | `collision` | Arm Capsule 활성화·공통 안전거리, TCP 반경, 경계 접촉 및 기하 오차 |
@@ -209,8 +209,9 @@ z = build_plane_z_mm + (k + 0.5) × layer_height_mm
 Validator는 `D` interval의 두 endpoint에 bead 반폭을 더한 적층 외곽이 원 안에
 있는지 검사한다. `T`와 `W`는 home 및 safe travel을 위해 원 밖에 있을 수 있다.
 
-각 `robots[]`의 `reach_radius_mm`는 `base_xyz_mm`를 중심으로 하는 3D 구의 반경이다.
-모든 D/T/W TCP 절점이 이 구 안에 있어야 하며, 초과하면 입력 파싱을
+각 `robots[]`의 `xy_reach_radius_mm`는 `base_xyz_mm`의 XY 투영을 중심으로 하는
+수평면 원의 반경이다. 모든 D/T/W TCP 절점의 XY 거리가 이 반경 안에 있어야 하며,
+Z 좌표는 Reach에 사용하지 않는다. 반경을 초과하면 입력 파싱을
 중단하지 않고 Validation `FAIL`로 판정한다.
 
 ```yaml

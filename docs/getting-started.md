@@ -84,7 +84,7 @@ waam-validator check C:\data\my_job
 - Target STL 로딩, watertight 설정과 좌표 범위 일관성 확인
 
 충돌 sample 생성, Target layer slicing, 형상 비교, 결과 파일 쓰기는 하지 않습니다.
-일부 속도·Wait·Reach 문제는 입력 파싱 오류가 아니라 실행 가능한 경고 또는 예상
+일부 속도·Wait·XY Reach 문제는 입력 파싱 오류가 아니라 실행 가능한 경고 또는 예상
 `FAIL`이므로 `check` 자체는 통과할 수 있습니다.
 
 전체 Validation은 다음과 같이 실행합니다.
@@ -93,7 +93,7 @@ waam-validator check C:\data\my_job
 waam-validator run C:\data\my_job
 ```
 
-콘솔에 Schedule, Reach, Collision, Shape, Failure Reasons와 결과 폴더가 표시됩니다.
+콘솔에 Schedule, XY Reach, Collision, Shape, Failure Reasons와 결과 폴더가 표시됩니다.
 기본 출력은 `C:\data\my_job\output\<timestamp>\`에 새로 생성됩니다.
 
 ## 실행 옵션

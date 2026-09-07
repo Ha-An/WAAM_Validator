@@ -9,7 +9,7 @@
 ```text
 세 입력 파일 확인
   → Config/CSV/STL 로딩과 의미 검사
-  → 원본 interval 일정·거리·Reach 계산
+  → 원본 interval 일정·거리·XY Reach 계산
   → adaptive timeline 충돌 검사
   → Deposition interval의 layer polygon 생성
   → Target STL layer slicing
@@ -18,7 +18,7 @@
 ```
 
 치명적 입력·Target·계산·출력 오류가 발생하면 `ERROR`로 중단합니다. 계산이 끝났지만
-Reach, 충돌, 형상 또는 설정된 공정 기준을 위반하면 정상 결과인 `FAIL`을 기록합니다.
+XY Reach, 충돌, 형상 또는 설정된 공정 기준을 위반하면 정상 결과인 `FAIL`을 기록합니다.
 
 ## Trajectory interval 해석
 
@@ -40,7 +40,7 @@ Reach, 충돌, 형상 또는 설정된 공정 기준을 위반하면 정상 결�
 - Wait 이동량이 허용 오차보다 크면 실행 가능한 정상 FAIL입니다.
 - 정지 상태의 Travel은 warning입니다.
 - Deposition/Travel 속도 위반은 `fail_on_speed_violation`에 따라 warning 또는 정상 FAIL입니다.
-- 모든 Deposition/Travel/Wait 원본 절점은 3D Reach 평가 대상입니다.
+- 모든 Deposition/Travel/Wait 원본 절점은 XY Reach 평가 대상이며 Z는 제외됩니다.
 
 ## Schedule과 경로 통계
 
@@ -72,25 +72,25 @@ makespan을 100%로 사용하고 `Deposition + Travel + Wait + 완료 후 비활
 시간 비율과 거리 비율은 같을 필요가 없습니다. 예를 들어 Travel 시간이 짧아도
 Travel 속도가 Deposition보다 훨씬 빠르면 Travel 거리가 더 클 수 있습니다.
 
-## Robot Reach
+## Robot XY Reach
 
-각 로봇의 Base를 중심으로 반경 `reach_radius_mm`인 3D 구를 정의합니다.
+각 로봇의 Base를 XY 평면에 투영하고 반경 `xy_reach_radius_mm`인 원을 정의합니다.
 
 ```text
-reach(t) = ||TCP(t) - Base||₂
-utilization = maximum reach / configured reach radius
-margin = configured reach radius - maximum reach
+xy_reach(t) = sqrt((TCP_x(t) - Base_x)² + (TCP_y(t) - Base_y)²)
+xy_utilization = maximum XY distance / configured XY reach radius
+xy_margin = configured XY reach radius - maximum XY distance
 ```
 
-모든 원본 절점을 검사하며 `reach > radius`인 절점 수와 최초·최종 위반 시간을
-기록합니다. 구는 convex이고 trajectory는 절점 사이 선형 보간이므로 두 끝점이 구
-안에 있으면 그 interval 전체도 구 안에 있습니다. 경계와 동일한 점은 통과합니다.
-한 점이라도 초과하면 해당 로봇과 전체 Reach 판정이 `FAIL`입니다.
+모든 원본 절점을 검사하며 `xy_reach > radius`인 절점 수와 최초·최종 위반 시간을
+기록합니다. XY 원은 convex이고 trajectory는 절점 사이 선형 보간이므로 두 끝점의
+XY 좌표가 원 안에 있으면 그 interval 전체도 원 안에 있습니다. 경계와 동일한 점은
+통과합니다. 한 점이라도 초과하면 해당 로봇과 전체 XY Reach 판정이 `FAIL`입니다.
 
-Reach는 기구학적 자세나 관절 제한이 아니라 Base–TCP 직선거리 기반의 1차 계획
-검사입니다.
+XY Reach는 Z 높이, 기구학적 자세나 관절 제한을 고려하지 않는 Base–TCP 수평거리
+기반의 1차 계획 검사입니다.
 
-`base_xyz_mm`은 로봇이 World 좌표계에 고정 설치된 기준점이며 모든 Reach와 Arm Capsule
+`base_xyz_mm`은 로봇이 World 좌표계에 고정 설치된 기준점이며 모든 XY Reach와 Arm Capsule
 계산의 원점입니다. `home_xyz_mm`은 입력 시작·종료 등에 사용할 수 있는 선택적 명목
 TCP 대기점일 뿐이며, Base를 대신하거나 Reach 중심을 바꾸지 않습니다.
 
@@ -219,11 +219,11 @@ failed ratio     = failed layer count / evaluated layer count
 다음 중 하나라도 있으면 정상 `FAIL`입니다.
 
 - Wait 위치 위반 또는 `fail_on_speed_violation: true`인 속도 위반
-- Robot Reach 초과
+- Robot XY Reach 초과
 - 활성화된 ARM_ENVELOPE 또는 TCP_RADIUS event
 - 전체 Coverage, Overfill, IoU 또는 failed-layer ratio 기준 위반
 
-Failure Reasons는 입력/process, Reach, ARM_ENVELOPE, TCP_RADIUS, 형상 threshold,
+Failure Reasons는 입력/process, XY Reach, ARM_ENVELOPE, TCP_RADIUS, 형상 threshold,
 속도 위반의 고정 순서로 생성합니다. Warning만 있고 위 조건이 없으면 PASS가
 가능합니다.
 
@@ -240,4 +240,4 @@ Failure Reasons는 입력/process, Reach, ARM_ENVELOPE, TCP_RADIUS, 형상 thres
 `PASS`는 이 모델과 설정의 검증 기준을 만족한다는 뜻이지 실제 장비 운전 승인이나
 품질 보증을 뜻하지 않습니다.
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)

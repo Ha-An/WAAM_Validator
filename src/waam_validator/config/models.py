@@ -14,7 +14,7 @@ class FrozenModel(BaseModel):
 
 class RobotConfig(FrozenModel):
     id: Literal[1, 2, 3]
-    # Fixed robot installation origin in World coordinates. Reach and the
+    # Fixed robot installation origin in World coordinates. XY Reach and the
     # simplified Base-to-TCP arm segment are always measured from this point.
     base_xyz_mm: tuple[float, float, float]
     # Optional nominal TCP standby position. It is metadata for generators and
@@ -23,7 +23,8 @@ class RobotConfig(FrozenModel):
     tcp_radius_mm: float = Field(gt=0)
     # Radius of the simplified Base-to-TCP capsule in the World XY plane.
     arm_envelope_radius_mm: float = Field(gt=0)
-    reach_radius_mm: float = Field(gt=0)
+    # Horizontal Base-to-TCP reach limit. The TCP Z coordinate is ignored.
+    xy_reach_radius_mm: float = Field(gt=0)
 
 
 class SimulationConfig(FrozenModel):

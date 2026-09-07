@@ -132,17 +132,17 @@ class ScheduleMetrics:
 @dataclass(slots=True)
 class RobotReachMetrics:
     robot_id: int
-    reach_radius_mm: float
-    maximum_reach_mm: float
-    minimum_margin_mm: float
-    utilization_ratio: float
-    violation_point_count: int
-    first_violation_s: float | None
-    last_violation_s: float | None
+    xy_reach_radius_mm: float
+    maximum_xy_distance_mm: float
+    minimum_xy_margin_mm: float
+    xy_utilization_ratio: float
+    xy_violation_point_count: int
+    first_xy_violation_s: float | None
+    last_xy_violation_s: float | None
 
     @property
     def passed(self) -> bool:
-        return self.violation_point_count == 0
+        return self.xy_violation_point_count == 0
 
 
 @dataclass(slots=True)
@@ -241,18 +241,19 @@ class ValidationResult:
                 "normalized_imbalance": self.schedule.normalized_imbalance,
             },
             "reach": {
+                "distance_basis": "XY",
                 "passed": self.reach.passed,
                 "robots": [
                     {
                         "robot_id": item.robot_id,
                         "passed": item.passed,
-                        "reach_radius_mm": item.reach_radius_mm,
-                        "maximum_reach_mm": item.maximum_reach_mm,
-                        "minimum_margin_mm": item.minimum_margin_mm,
-                        "utilization_ratio": item.utilization_ratio,
-                        "violation_point_count": item.violation_point_count,
-                        "first_violation_s": item.first_violation_s,
-                        "last_violation_s": item.last_violation_s,
+                        "xy_reach_radius_mm": item.xy_reach_radius_mm,
+                        "maximum_xy_distance_mm": item.maximum_xy_distance_mm,
+                        "minimum_xy_margin_mm": item.minimum_xy_margin_mm,
+                        "xy_utilization_ratio": item.xy_utilization_ratio,
+                        "xy_violation_point_count": item.xy_violation_point_count,
+                        "first_xy_violation_s": item.first_xy_violation_s,
+                        "last_xy_violation_s": item.last_xy_violation_s,
                     }
                     for item in self.reach.robots
                 ],

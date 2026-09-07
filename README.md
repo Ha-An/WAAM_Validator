@@ -10,11 +10,11 @@ WAAM Validator는 세 대 로봇의 WAAM(DED) 작업 계획을 실행 전에 검
 ![WAAM Validator 3D trajectory 및 XY Capsule Replay](docs/assets/waam-validator-replay.gif)
 
 - 원본 trajectory interval 기준 일정, 상태별 시간·거리·평균속도
-- Robot Base 기준 3D Reach 위반
+- Robot Base 기준 XY 평면 Reach 위반
 - Base–TCP 중심선을 폭이 있는 Capsule로 본 XY Arm Envelope 충돌과 TCP 반경 침범
 - 명목 비드 형상과 Target STL layer 단면의 Coverage, Underfill, Overfill, IoU
 
-현재 애플리케이션 버전은 `1.0.0`, 결과 JSON schema는 `3.0`입니다. Config 자체에는
+현재 애플리케이션 버전은 `1.0.0`, 결과 JSON schema는 `4.0`입니다. Config 자체에는
 버전 필드가 없습니다.
 
 > 이 도구는 계획 단계의 기하 검증기입니다. 실제 관절·링크 자세, Z 방향 로봇 간
@@ -65,6 +65,8 @@ robot_id,time_s,x_mm,y_mm,z_mm,mode
 
 `robot_id`는 `1`, `2`, `3`을 모두 포함합니다. 좌표와 STL은 같은 World 좌표계의
 밀리미터 단위입니다. 각 행의 `mode`는 해당 행부터 다음 행까지의 상태입니다.
+XY Reach는 `sqrt((TCP_x-Base_x)^2 + (TCP_y-Base_y)^2)`로 판정하며 TCP와 Base의
+Z 좌표는 Reach 계산에 사용하지 않습니다.
 
 | 값 | 전체 이름 | 의미 |
 | --- | --- | --- |
@@ -81,9 +83,9 @@ robot_id,time_s,x_mm,y_mm,z_mm,mode
 
 | 파일 | 내용 |
 | --- | --- |
-| `summary.json` | schema 3.0 최종 판정, 핵심 지표, 구조화된 issues |
+| `summary.json` | schema 4.0 최종 판정, 핵심 지표, 구조화된 issues |
 | `validation_report.md` | 사람이 읽는 결과 보고서 |
-| `robot_metrics.csv` | 상태 시간, 완료 후 비활성, 거리·속도·Reach |
+| `robot_metrics.csv` | 상태 시간, 완료 후 비활성, 거리·속도·XY Reach |
 | `collision_events.csv` | 충돌 종류·pair·시간·거리·안전 여유 |
 | `layer_metrics.csv` | layer별 면적과 형상 지표 |
 | `run.log` | 실행 단계와 계산 요약 |
@@ -105,18 +107,15 @@ stderr에 출력합니다. Replay는 UI에서 주문 생성하십시오.
 
 | 문서 | 내용 |
 | --- | --- |
-| [문서 안내](docs/README.md) | 목적별 문서 찾기 |
 | [설치 및 시작](docs/getting-started.md) | 설치, CLI와 UI 실행 |
 | [입력물 인터페이스](docs/WAAM_Validator_입력물_인터페이스.md) | 경로 생성 알고리즘의 출력 계약 |
 | [Config 참조](docs/config-reference.md) | 모든 Config 필드와 제약 |
-| [검증 방법](docs/validation-method.md) | 일정·Reach·Capsule·형상 계산과 한계 |
+| [검증 방법](docs/validation-method.md) | 일정·XY Reach·Capsule·형상 계산과 한계 |
 | [UI 안내](docs/ui-guide.md) | 세 화면과 추가 산출물 생성 |
-| [결과 참조](docs/results-reference.md) | schema 3.0 JSON/CSV 필드와 해석 |
+| [결과 참조](docs/results-reference.md) | schema 4.0 JSON/CSV 필드와 해석 |
 | [Python API](docs/python-api.md) | 공개 함수와 진행 콜백 |
 | [개발자 안내](docs/development.md) | 구조, 테스트, 품질 검사 |
 | [버전 관리](docs/versioning.md) | 앱·Config·결과 schema 관계 |
-| [검증 데이터](tests/README.md) | fixture, 01–10, Motor, Twisted Half |
-| [Benchmark 방법](tests/benchmark_results.md) | 절차적 모델의 목적과 재측정 방법 |
 
 ## 설계 원칙
 

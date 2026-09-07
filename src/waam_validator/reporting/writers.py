@@ -150,11 +150,11 @@ def write_result_files(result: ValidationResult) -> None:
                 "travel_length_mm",
                 "mean_deposition_speed_mm_s",
                 "mean_travel_speed_mm_s",
-                "reach_radius_mm",
-                "maximum_reach_mm",
-                "reach_margin_mm",
-                "reach_utilization_ratio",
-                "reach_violation_point_count",
+                "xy_reach_radius_mm",
+                "maximum_xy_distance_mm",
+                "minimum_xy_margin_mm",
+                "xy_utilization_ratio",
+                "xy_violation_point_count",
             ],
             [
                 {
@@ -170,11 +170,11 @@ def write_result_files(result: ValidationResult) -> None:
                     "travel_length_mm": item.travel_length_mm,
                     "mean_deposition_speed_mm_s": _optional(item.mean_deposition_speed_mm_s),
                     "mean_travel_speed_mm_s": _optional(item.mean_travel_speed_mm_s),
-                    "reach_radius_mm": reach.reach_radius_mm,
-                    "maximum_reach_mm": reach.maximum_reach_mm,
-                    "reach_margin_mm": reach.minimum_margin_mm,
-                    "reach_utilization_ratio": reach.utilization_ratio,
-                    "reach_violation_point_count": reach.violation_point_count,
+                    "xy_reach_radius_mm": reach.xy_reach_radius_mm,
+                    "maximum_xy_distance_mm": reach.maximum_xy_distance_mm,
+                    "minimum_xy_margin_mm": reach.minimum_xy_margin_mm,
+                    "xy_utilization_ratio": reach.xy_utilization_ratio,
+                    "xy_violation_point_count": reach.xy_violation_point_count,
                 }
                 for item, reach in zip(result.schedule.robots, result.reach.robots, strict=True)
             ],
@@ -232,9 +232,9 @@ def _render_markdown(result: ValidationResult) -> str:
         for item in result.schedule.robots
     )
     reach_lines = "\n".join(
-        f"- R{item.robot_id}: max {item.maximum_reach_mm:.2f} / "
-        f"{item.reach_radius_mm:.2f} mm; margin {item.minimum_margin_mm:.2f} mm; "
-        f"violating points {item.violation_point_count}"
+        f"- R{item.robot_id}: max XY distance {item.maximum_xy_distance_mm:.2f} / "
+        f"{item.xy_reach_radius_mm:.2f} mm; XY margin {item.minimum_xy_margin_mm:.2f} mm; "
+        f"violating points {item.xy_violation_point_count}"
         for item in result.reach.robots
     )
     failures = (
@@ -263,7 +263,7 @@ def _render_markdown(result: ValidationResult) -> str:
 - Makespan: {result.schedule.makespan_s:.2f} s
 {robot_lines}
 
-## Robot Reach
+## Robot XY Reach
 
 - Passed: {result.reach.passed}
 {reach_lines}
@@ -353,13 +353,13 @@ def render_console_summary(result: ValidationResult) -> str:
             f"D={item.deposition_time_s:.2f} s | T={item.travel_time_s:.2f} s | "
             f"W={item.wait_time_s:.2f} s"
         )
-    lines.extend(["", "[Robot Reach]"])
+    lines.extend(["", "[Robot XY Reach]"])
     for reach_item in result.reach.robots:
         lines.append(
-            f"R{reach_item.robot_id} : max={reach_item.maximum_reach_mm:.2f} mm | "
-            f"limit={reach_item.reach_radius_mm:.2f} mm | "
-            f"margin={reach_item.minimum_margin_mm:.2f} mm | "
-            f"violations={reach_item.violation_point_count}"
+            f"R{reach_item.robot_id} : max_xy={reach_item.maximum_xy_distance_mm:.2f} mm | "
+            f"limit={reach_item.xy_reach_radius_mm:.2f} mm | "
+            f"xy_margin={reach_item.minimum_xy_margin_mm:.2f} mm | "
+            f"violations={reach_item.xy_violation_point_count}"
         )
     arm_pair = result.collision.minimum_arm_pair
     tcp_pair = result.collision.minimum_tcp_pair

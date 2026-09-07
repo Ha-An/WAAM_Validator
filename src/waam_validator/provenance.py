@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Final
 
-RESULT_SCHEMA_VERSION: Final = "3.0"
+RESULT_SCHEMA_VERSION: Final = "4.0"
 VALIDATION_INPUT_MANIFEST: Final = "validation_inputs.json"
 INPUT_FILENAMES: Final = ("config.yaml", "trajectory.csv", "target.stl")
 
@@ -44,7 +44,7 @@ def write_validation_input_manifest(
 
 
 def verify_validation_inputs(job_dir: Path, run_dir: Path) -> tuple[bool, str]:
-    """Verify that a schema 3.0 run still refers to the current three inputs."""
+    """Verify that a schema 4.0 run still refers to the current three inputs."""
     path = run_dir / VALIDATION_INPUT_MANIFEST
     if not path.is_file():
         return False, "현재 결과 형식에는 입력 지문이 없습니다. Validation을 다시 실행하세요."

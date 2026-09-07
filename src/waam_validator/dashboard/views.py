@@ -449,10 +449,10 @@ def _config_inspection(config: JsonDict) -> Any:
                     _vector(robot.get("home_xyz_mm")) if robot.get("home_xyz_mm") else "미설정",
                 ),
                 (
-                    f"R{robot_id} TCP / Arm 반경 / Reach",
+                    f"R{robot_id} TCP / Arm 반경 / XY Reach",
                     f"{robot.get('tcp_radius_mm', '—')} / "
                     f"{robot.get('arm_envelope_radius_mm', '—')} / "
-                    f"{robot.get('reach_radius_mm', '—')} mm",
+                    f"{robot.get('xy_reach_radius_mm', '—')} mm",
                 ),
             ]
         )

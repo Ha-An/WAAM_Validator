@@ -6,7 +6,7 @@
 WAAM_Validator/
 ├── src/waam_validator/
 │   ├── config/          # Pydantic Config 모델과 YAML 로딩
-│   ├── trajectory/      # CSV 로딩, 의미 검사, 보간, adaptive sampling, Reach
+│   ├── trajectory/      # CSV 로딩, 의미 검사, 보간, adaptive sampling, XY Reach
 │   ├── schedule/        # 원본 interval 기반 시간·거리 통계
 │   ├── collision/       # 2D geometry, streaming 검사, event 병합
 │   ├── shape/           # D polygon, STL slicing, 형상 지표, mesh export
@@ -18,13 +18,7 @@ WAAM_Validator/
 │   ├── models.py        # typed runtime/result dataclass
 │   ├── pipeline.py      # 전체 Validation orchestration
 │   └── progress.py      # 진행 event 계약
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── performance/
-│   ├── fixtures/
-│   └── 01/ ... 10/      # 절차적 benchmark 입력
-├── scripts/             # fixture·benchmark 입력 생성기
+├── scripts/             # 로컬 fixture·benchmark 입력 생성기
 ├── examples/sample_job/
 ├── docs/
 ├── pyproject.toml
@@ -51,6 +45,18 @@ python -m pip install -e . --no-deps
 package를 `--no-deps`로 연결하므로 임의의 최신 transitive dependency를 다시 해석하지
 않습니다.
 
+## 공개 저장소와 로컬 검증 데이터
+
+대용량 STL·trajectory와 연구용 benchmark를 포함하는 `tests/` 전체는 공개 저장소에
+포함하지 않으며 `.gitignore`로 제외합니다. 공개 사용 예제는
+`examples/sample_job/`에 유지합니다. 로컬 개발 환경에서는 별도로 보관한 테스트
+suite와 `scripts/`의 생성기를 사용할 수 있지만, 이를 실행해 만들어진 `tests/`
+내용을 커밋하지 마십시오.
+
+GitHub Actions는 공개 저장소에 존재하는 코드만으로 Ruff, strict mypy, `pip check`와
+sample job 입력 smoke check를 수행합니다. 아래 pytest 명령은 로컬 테스트 suite가
+준비된 개발 환경에서만 사용합니다.
+
 ## 품질 검사
 
 ### 일반 테스트
@@ -59,9 +65,9 @@ package를 `--no-deps`로 연결하므로 임의의 최신 transitive dependency
 .\.venv\Scripts\pytest.exe -q -m "not performance"
 ```
 
-`pyproject.toml`의 기본 pytest 옵션도 performance test를 제외합니다. Unit test는
-config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape, UI data/preview/runner를
-검증합니다. Integration test는 CLI와 single-job UI의 실제 연결을 확인합니다.
+`pyproject.toml`의 기본 pytest 옵션도 performance test를 제외합니다. 로컬 테스트
+suite는 config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape,
+UI data/preview/runner 및 single-job UI 연결을 검증합니다.
 
 ### 정적 검사
 
@@ -166,4 +172,4 @@ Worker가 강제 종료되면 `.waam_state/validation-status.json`만 있는 미
 - [버전 및 호환성](versioning.md)
 - [입력물 인터페이스](WAAM_Validator_입력물_인터페이스.md)
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)

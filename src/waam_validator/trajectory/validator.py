@@ -26,13 +26,14 @@ def validate_trajectory_set(
     for item in reach.robots:
         if not item.passed:
             messages.violation(
-                "ROBOT_REACH_VIOLATION",
-                f"Robot {item.robot_id} maximum TCP reach {item.maximum_reach_mm:.6g} mm "
-                f"exceeds configured radius {item.reach_radius_mm:.6g} mm at "
-                f"{item.violation_point_count} point(s).",
+                "ROBOT_XY_REACH_VIOLATION",
+                f"Robot {item.robot_id} maximum TCP XY distance "
+                f"{item.maximum_xy_distance_mm:.6g} mm exceeds configured XY Reach "
+                f"radius {item.xy_reach_radius_mm:.6g} mm at "
+                f"{item.xy_violation_point_count} point(s).",
                 robot_id=item.robot_id,
-                start_s=item.first_violation_s,
-                end_s=item.last_violation_s,
+                start_s=item.first_xy_violation_s,
+                end_s=item.last_xy_violation_s,
             )
 
     for trajectory in trajectories.robots:

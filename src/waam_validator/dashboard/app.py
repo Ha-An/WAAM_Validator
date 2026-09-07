@@ -92,7 +92,7 @@ _GRAPH_CONFIG: Any = {"displaylogo": False, "responsive": True}
 _ARTIFACT_LABELS = {
     "summary.json": "종합 판정 데이터",
     "validation_report.md": "검증 보고서",
-    "robot_metrics.csv": "로봇 작업·Reach 수치",
+    "robot_metrics.csv": "로봇 작업·XY Reach 수치",
     "collision_events.csv": "충돌 이벤트 수치",
     "layer_metrics.csv": "Layer 형상 수치",
     "run.log": "실행 기록",
@@ -330,11 +330,12 @@ def _layout(initial_job_dir: Path) -> html.Div:
                                     ),
                                     html.Section(
                                         [
-                                            html.H3("로봇별 Reach 사용률"),
+                                            html.H3("로봇별 XY Reach 사용률"),
                                             html.P(
                                                 "Robot Base에서 trajectory의 가장 먼 TCP까지의 "
-                                                "거리 ÷ 설정 Reach입니다. 100%를 초과하면 "
-                                                "Reach 판정이 FAIL입니다.",
+                                                "XY 거리 ÷ 설정 XY Reach입니다. 100%를 초과하면 "
+                                                "XY Reach 판정이 FAIL입니다. Z는 판정에서 "
+                                                "제외됩니다.",
                                                 className="muted-copy",
                                             ),
                                             dcc.Graph(
@@ -681,13 +682,15 @@ def _robot_result_rows(robot_rows: list[JsonDict], reach_rows: list[JsonDict]) -
                     f"{float(robot.get('mean_deposition_speed_mm_s', 0.0) or 0.0):,.2f} / "
                     f"{float(robot.get('mean_travel_speed_mm_s', 0.0) or 0.0):,.2f}"
                 ),
-                "reach_use": (
-                    f"{float(reach.get('maximum_reach_mm', 0.0)):,.1f} / "
-                    f"{float(reach.get('reach_radius_mm', 0.0)):,.1f} mm · "
-                    f"{float(reach.get('utilization_ratio', 0.0)):.1%}"
+                "xy_reach_use": (
+                    f"{float(reach.get('maximum_xy_distance_mm', 0.0)):,.1f} / "
+                    f"{float(reach.get('xy_reach_radius_mm', 0.0)):,.1f} mm · "
+                    f"{float(reach.get('xy_utilization_ratio', 0.0)):.1%}"
                 ),
-                "reach_margin_mm": f"{float(reach.get('minimum_margin_mm', 0.0)):,.2f}",
-                "reach_result": "PASS" if bool(reach.get("passed")) else "FAIL",
+                "xy_reach_margin_mm": (
+                    f"{float(reach.get('minimum_xy_margin_mm', 0.0)):,.2f}"
+                ),
+                "xy_reach_result": "PASS" if bool(reach.get("passed")) else "FAIL",
             }
         )
     return combined
@@ -1071,10 +1074,10 @@ def _result_view(
     typed_reach_rows = [row for row in reach_rows if isinstance(row, dict)]
     worst_reach = min(
         typed_reach_rows,
-        key=lambda row: float(row.get("minimum_margin_mm", 0.0)),
+        key=lambda row: float(row.get("minimum_xy_margin_mm", 0.0)),
         default={},
     )
-    worst_reach_margin = float(worst_reach.get("minimum_margin_mm", 0.0))
+    worst_reach_margin = float(worst_reach.get("minimum_xy_margin_mm", 0.0))
     overall_coverage = float(shape.get("coverage", 0.0))
     overall_iou = float(shape.get("iou", 0.0))
     target_volume = float(shape.get("target_volume_mm3", 0.0))
@@ -1100,9 +1103,10 @@ def _result_view(
             f"Makespan {makespan_s:,.2f} s",
         ),
         _status_metric_card(
-            "Robot Reach",
+            "Robot XY Reach",
             reach.get("passed"),
-            f"최소 여유 {worst_reach_margin:,.2f} mm · R{int(worst_reach.get('robot_id', 0))}",
+            f"최소 XY 여유 {worst_reach_margin:,.2f} mm · "
+            f"R{int(worst_reach.get('robot_id', 0))}",
         ),
         _status_metric_card(
             "로봇 간 충돌 안전",
@@ -1300,11 +1304,11 @@ def _result_view(
                                 ),
                                 html.Section(
                                     [
-                                        html.H3("로봇별 작업·Reach 상세"),
+                                        html.H3("로봇별 작업·XY Reach 상세"),
                                         html.P(
                                             "D/T/W 값은 상태별 시간, D/T 값은 적층/비적층 "
-                                            "이동을 뜻합니다. Reach는 최대 사용거리와 설정 한계를 "
-                                            "한 항목에서 비교합니다.",
+                                            "이동을 뜻합니다. XY Reach는 Z를 제외한 최대 "
+                                            "수평거리와 설정 한계를 한 항목에서 비교합니다.",
                                             className="muted-copy",
                                         ),
                                         _grid(
@@ -1315,9 +1319,9 @@ def _result_view(
                                                 ("D/T/W 시간 [s]", "state_time_s"),
                                                 ("D/T 거리 [mm]", "path_length_mm"),
                                                 ("D/T 평균속도", "mean_speed_mm_s"),
-                                                ("최대/한계 Reach", "reach_use"),
-                                                ("Reach 여유 [mm]", "reach_margin_mm"),
-                                                ("Reach 판정", "reach_result"),
+                                                ("최대/한계 XY Reach", "xy_reach_use"),
+                                                ("XY Reach 여유 [mm]", "xy_reach_margin_mm"),
+                                                ("XY Reach 판정", "xy_reach_result"),
                                             ],
                                             rows=robot_result_rows,
                                             page_size=10,

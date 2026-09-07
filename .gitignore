@@ -11,4 +11,4 @@ dist/
 *.egg-info/
 .waam_cache/
 output/
-tests/.generated/
+/tests/

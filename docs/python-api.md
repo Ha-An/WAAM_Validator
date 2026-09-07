@@ -109,6 +109,11 @@ deposited_layers = build_deposited_layers(trajectories, config)
 `run_collision_simulation`은 선택적인 단계 진행 callback도 받습니다. 이 callback의
 형태는 `(fraction, completed, total)`입니다.
 
+`compute_reach_metrics()`는 Base와 원본 TCP 절점 사이의 XY 거리만 계산하며 Z는
+무시합니다. `RobotReachMetrics`는 `xy_reach_radius_mm`,
+`maximum_xy_distance_mm`, `minimum_xy_margin_mm`, `xy_utilization_ratio`,
+`xy_violation_point_count`, `first_xy_violation_s`, `last_xy_violation_s`를 제공합니다.
+
 충돌 결과의 Arm event 유형은 `ARM_ENVELOPE`입니다. 전체 결과의
 `CollisionSimulationResult`는 event 외에도 최소 Arm safety margin, 그때의 중심선
 거리·요구 거리·pair·시각·closest points·세 TCP XY 위치와 최소 TCP 거리를 보존합니다.
@@ -168,4 +173,4 @@ print(waam_validator.__version__)
 없습니다. 공개 API나 동작에 호환성이 깨지는 변경을 할 때는 애플리케이션 버전과
 문서를 함께 갱신하십시오.
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)

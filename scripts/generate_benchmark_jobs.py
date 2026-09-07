@@ -247,8 +247,8 @@ def _home_position(config: Config, robot_id: int) -> np.ndarray:
     safe_z = config.process.safe_travel_z_mm
     return np.asarray(
         [
-            base[0] + direction[0] * min(400.0, robot.reach_radius_mm * 0.2),
-            base[1] + direction[1] * min(400.0, robot.reach_radius_mm * 0.2),
+            base[0] + direction[0] * min(400.0, robot.xy_reach_radius_mm * 0.2),
+            base[1] + direction[1] * min(400.0, robot.xy_reach_radius_mm * 0.2),
             safe_z if safe_z is not None else config.process.build_plane_z_mm + 500.0,
         ],
         dtype=np.float64,

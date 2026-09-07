@@ -37,10 +37,10 @@ def config(
             {
                 "id": robot_id,
                 "base_xyz_mm": list(base),
-                **({"home_xyz_mm": [base[0], base[1], 100.0]} if include_home else {}),
+                **({"home_xyz_mm": [base[0], base[1], 1000.0]} if include_home else {}),
                 "tcp_radius_mm": 20.0,
                 "arm_envelope_radius_mm": 100.0,
-                "reach_radius_mm": 2500.0,
+                "xy_reach_radius_mm": 2500.0,
             }
             for robot_id, base in BASES.items()
         ],

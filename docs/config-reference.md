@@ -49,22 +49,22 @@ Validator는 세 로봇의 원본 timestamp 합집합을 모두 보존한 뒤
 | 필드 | 타입·제약 | 상세 의미 |
 | --- | --- | --- |
 | `id` | `1`, `2`, `3` | `trajectory.csv`의 `robot_id`와 Config 로봇을 연결하는 식별자입니다. |
-| `base_xyz_mm` | float 3개 | World 좌표계에서 움직이지 않는 **로봇 설치 기준점(Base)**입니다. Reach 거리는 이 점부터 TCP까지의 3차원 거리로 계산하고, 2D Arm Capsule 중심선의 고정 끝점으로 사용합니다. trajectory의 시작 위치가 아닙니다. |
+| `base_xyz_mm` | float 3개 | World 좌표계에서 움직이지 않는 **로봇 설치 기준점(Base)**입니다. XY Reach 거리는 이 점의 XY 좌표부터 TCP의 XY 좌표까지 계산하고, 2D Arm Capsule 중심선의 고정 끝점으로 사용합니다. trajectory의 시작 위치가 아닙니다. |
 | `home_xyz_mm` | float 3개 또는 생략 | World 좌표계에서 공구 기준점인 **TCP의 명목 대기 위치(Home)**입니다. 경로 생성기가 작업 시작·종료점이나 안전 대기점으로 사용할 수 있고 UI에 별도 표식으로 표시됩니다. Base와 달리 로봇 본체의 설치점이 아니며, 현재 Validator는 trajectory 시작·종료 좌표가 Home과 같은지를 강제하지 않습니다. |
 | `tcp_radius_mm` | float, `> 0` | TCP 주변의 충돌 판정용 XY 안전 반경입니다. 실제 점의 물리적 반지름이 아니라 토치·엔드 이펙터와 안전 여유를 대표합니다. 두 로봇의 요구 중심 간격은 두 `tcp_radius_mm`의 합입니다. 적층 비드 폭이나 Reach에는 영향을 주지 않습니다. |
 | `arm_envelope_radius_mm` | float, `> 0` | Base에서 현재 TCP까지의 XY 중심선을 둘러싸는 Capsule의 물리적 대표 반경입니다. 전체 폭은 이 값의 2배입니다. 관절 자세를 재현하는 링크 반경이 아니라 팔이 점유한다고 보수적으로 가정할 평면 폭입니다. 공통 추가 안전거리와는 분리해 설정합니다. |
-| `reach_radius_mm` | float, `> 0` | Base를 중심으로 TCP가 도달할 수 있다고 허용하는 3차원 구의 반경입니다. 모든 Deposition·Travel·Wait 절점을 검사하며 초과하면 실행 가능한 정상 `FAIL`입니다. |
+| `xy_reach_radius_mm` | float, `> 0` | Base의 XY 투영을 중심으로 TCP가 수평면에서 도달할 수 있다고 허용하는 원의 반경입니다. 모든 Deposition·Travel·Wait 절점의 XY 거리를 검사하고 Z는 무시하며, 초과하면 실행 가능한 정상 `FAIL`입니다. 구형 `reach_radius_mm`는 거부합니다. |
 
 Base와 Home의 핵심 차이는 다음과 같습니다.
 
 ```text
 Base = 고정된 로봇 설치 기준점
 Home = 이동 가능한 TCP의 명목 대기 좌표
-Reach 거리 = ||TCP - Base||₂
+XY Reach 거리 = sqrt((TCP_x - Base_x)² + (TCP_y - Base_y)²)
 ```
 
 세 Base 좌표는 서로 달라야 하고, XY 투영이 면적을 갖는 삼각형을 이루어야 합니다.
-현재 Arm Capsule과 TCP 안전 반경 검사는 XY 평면에서 수행합니다. 따라서 Z가 다른
+현재 XY Reach, Arm Capsule과 TCP 안전 반경 검사는 XY 평면에서 수행합니다. 따라서 Z가 다른
 공구도 XY가 가까우면 보수적으로 충돌 판정을 받을 수 있습니다.
 
 ## `process`: 공정과 경로 생성 기준값
@@ -105,7 +105,7 @@ Deposition(재료를 적층하며 이동) 구간은 중심선뿐 아니라 명�
 | `arm_clearance_mm` | float, `>= 0` | 두 물리 Capsule 표면 사이에 추가로 요구하는 공통 안전거리입니다. Pair의 요구 중심선 거리는 `radius_A + radius_B + arm_clearance_mm`입니다. 시각화의 점선 판정 외곽선에는 각 Capsule에 절반씩 더해 표시합니다. |
 | `check_tcp_radius` | bool | 두 TCP의 XY 거리가 각 로봇 `tcp_radius_mm` 합보다 가까운지 검사할지 정합니다. 꺼도 최소 TCP 거리는 지표로 계산합니다. |
 | `touching_is_collision` | bool | Arm 안전 여유 또는 TCP 거리가 정확히 판정 경계와 같을 때 충돌로 포함할지 정합니다. `true`이면 경계 접촉도 충돌입니다. |
-| `geometry_epsilon_mm` | float, `> 0` | Arm Capsule 접촉 경계와 Reach 경계 계산에서 부동소수점 오차를 흡수하기 위한 길이 허용치입니다. 물리적 안전 여유 대신 사용하면 안 됩니다. |
+| `geometry_epsilon_mm` | float, `> 0` | Arm Capsule 접촉 경계와 XY Reach 경계 계산에서 부동소수점 오차를 흡수하기 위한 길이 허용치입니다. 물리적 안전 여유 대신 사용하면 안 됩니다. |
 
 검사를 끄면 해당 항목은 `FAIL` 원인이 되지 않고 비활성화 경고가 기록됩니다. 예를
 들어 Arm 반경이 각각 100 mm이고 공통 안전거리가 50 mm라면 요구 중심선 간격은
@@ -150,7 +150,7 @@ Deposition(재료를 적층하며 이동) 구간은 중심선뿐 아니라 명�
 
 ## 결과 파일 정책
 
-Config는 결과 파일 생성을 제어하지 않습니다. Validation은 schema 3.0의 핵심
+Config는 결과 파일 생성을 제어하지 않습니다. Validation은 schema 4.0의 핵심
 JSON·CSV·보고서·로그·입력 지문을 항상 기록합니다. 화면과 중복되는 정적 PNG는
 지원하지 않습니다. `deposited.stl`과 `replay.html`은 Validation 완료 후 UI의
 `산출물` 탭에서 필요한 경우에만 생성합니다.
@@ -174,22 +174,22 @@ simulation:
 robots:
   - id: 1
     base_xyz_mm: [-1400.0, 0.0, 0.0]
-    home_xyz_mm: [-1000.0, 0.0, 1700.0]
+    home_xyz_mm: [-1000.0, 0.0, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
   - id: 2
     base_xyz_mm: [700.0, -1212.435565, 0.0]
-    home_xyz_mm: [500.0, -866.025404, 1700.0]
+    home_xyz_mm: [500.0, -866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
   - id: 3
     base_xyz_mm: [700.0, 1212.435565, 0.0]
-    home_xyz_mm: [500.0, 866.025404, 1700.0]
+    home_xyz_mm: [500.0, 866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
 process:
   deposition_speed_mm_s: 8.0
   travel_speed_mm_s: 150.0
@@ -197,7 +197,7 @@ process:
   bead_width_mm: 8.0
   build_plane_z_mm: 0.0
   tcp_z_reference: center
-  safe_travel_z_mm: 1700.0
+  safe_travel_z_mm: 1000.0
   arc_on_time_s: 1.0
   arc_off_time_s: 1.0
 workspace:
@@ -229,4 +229,4 @@ shape_validation:
   area_epsilon_mm2: 1.0e-6
 ```
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)

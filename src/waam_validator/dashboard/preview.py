@@ -113,25 +113,50 @@ def _workspace_trace(config: Config) -> go.Mesh3d:
     )
 
 
-def _reach_trace(robot_id: int, base: np.ndarray, radius: float) -> go.Surface:
-    longitude, latitude = np.meshgrid(
-        np.linspace(0.0, 2.0 * math.pi, 33),
-        np.linspace(-math.pi / 2.0, math.pi / 2.0, 17),
+def _reach_cylinder_trace(
+    robot_id: int,
+    base: np.ndarray,
+    radius: float,
+    z_min: float,
+    z_max: float,
+) -> go.Surface:
+    angles, heights = np.meshgrid(
+        np.linspace(0.0, 2.0 * math.pi, 49),
+        np.asarray([z_min, z_max], dtype=np.float64),
     )
     color = _ROBOT_COLORS[robot_id]
     return go.Surface(
-        x=base[0] + radius * np.cos(latitude) * np.cos(longitude),
-        y=base[1] + radius * np.cos(latitude) * np.sin(longitude),
-        z=base[2] + radius * np.sin(latitude),
-        surfacecolor=np.zeros_like(longitude),
+        x=base[0] + radius * np.cos(angles),
+        y=base[1] + radius * np.sin(angles),
+        z=heights,
+        surfacecolor=np.zeros_like(angles),
         colorscale=[[0.0, color], [1.0, color]],
         cmin=0.0,
         cmax=1.0,
-        name=f"R{robot_id} reach",
+        name=f"R{robot_id} XY Reach",
         opacity=0.09,
         showscale=False,
         showlegend=True,
-        hoverinfo="skip",
+        hovertemplate=(
+            f"R{robot_id} XY Reach<br>Radius {radius:,.2f} mm<br>Z ignored<extra></extra>"
+        ),
+    )
+
+
+def _reach_footprint_trace(robot_id: int, base: np.ndarray, radius: float) -> go.Scatter3d:
+    angles = np.linspace(0.0, 2.0 * math.pi, 73)
+    return go.Scatter3d(
+        x=base[0] + radius * np.cos(angles),
+        y=base[1] + radius * np.sin(angles),
+        z=np.full_like(angles, base[2]),
+        mode="lines",
+        name=f"R{robot_id} XY Reach footprint",
+        line={"color": _ROBOT_COLORS[robot_id], "width": 3, "dash": "dot"},
+        showlegend=False,
+        hovertemplate=(
+            f"R{robot_id} XY Reach footprint<br>Radius {radius:,.2f} mm"
+            "<br>Z ignored<extra></extra>"
+        ),
     )
 
 
@@ -140,6 +165,24 @@ def _scene(
 ) -> tuple[go.Figure, list[str], int, dict[int, int]]:
     vertices, faces, warnings = _preview_mesh(mesh)
     figure = go.Figure()
+    bases = np.asarray([robot.base_xyz_mm for robot in config.robots], dtype=np.float64)
+    scene_z_min = min(
+        float(vertices[:, 2].min()),
+        float(bases[:, 2].min()),
+        *(float(trajectory.xyz_mm[:, 2].min()) for trajectory in trajectories.robots),
+    )
+    scene_z_max = max(
+        float(vertices[:, 2].max()),
+        float(bases[:, 2].max()),
+        *(
+            float(robot.home_xyz_mm[2])
+            for robot in config.robots
+            if robot.home_xyz_mm is not None
+        ),
+        *(float(trajectory.xyz_mm[:, 2].max()) for trajectory in trajectories.robots),
+    )
+    if scene_z_max <= scene_z_min:
+        scene_z_max = scene_z_min + 1.0
     figure.add_trace(
         go.Mesh3d(
             x=vertices[:, 0],
@@ -156,7 +199,6 @@ def _scene(
         )
     )
     figure.add_trace(_workspace_trace(config))
-    bases = np.asarray([robot.base_xyz_mm for robot in config.robots], dtype=np.float64)
     closed_bases = np.vstack((bases, bases[0]))
     figure.add_trace(
         go.Scatter3d(
@@ -214,7 +256,16 @@ def _scene(
                     ),
                 )
             )
-        figure.add_trace(_reach_trace(robot.id, base, robot.reach_radius_mm))
+        figure.add_trace(
+            _reach_cylinder_trace(
+                robot.id,
+                base,
+                robot.xy_reach_radius_mm,
+                scene_z_min,
+                scene_z_max,
+            )
+        )
+        figure.add_trace(_reach_footprint_trace(robot.id, base, robot.xy_reach_radius_mm))
         selected = _bounded_interval_indices(trajectory.mode, max_intervals)
         points_shown[robot.id] = min(TRAJECTORY_POINT_LIMIT_PER_ROBOT, int(len(selected) * 3))
         for mode_value in (int(MODE_D), int(MODE_T), int(MODE_W)):
@@ -342,7 +393,7 @@ def _statistics_figures(
         plot_bgcolor="#0d1927",
     )
     reach_figure = go.Figure()
-    reach_percentages = [item.utilization_ratio * 100.0 for item in reach.robots]
+    reach_percentages = [item.xy_utilization_ratio * 100.0 for item in reach.robots]
     reach_figure.add_bar(
         x=reach_percentages,
         y=labels,
@@ -352,18 +403,18 @@ def _statistics_figures(
         textposition="inside",
         customdata=[
             [
-                item.maximum_reach_mm,
-                item.reach_radius_mm,
-                item.minimum_margin_mm,
-                item.violation_point_count,
+                item.maximum_xy_distance_mm,
+                item.xy_reach_radius_mm,
+                item.minimum_xy_margin_mm,
+                item.xy_violation_point_count,
             ]
             for item in reach.robots
         ],
         hovertemplate=(
-            "%{y}<br>Reach 사용률 %{x:.2f}%"
-            "<br>최대 Base–TCP 거리 %{customdata[0]:,.2f} mm"
-            "<br>설정 Reach %{customdata[1]:,.2f} mm"
-            "<br>최소 여유 %{customdata[2]:,.2f} mm"
+            "%{y}<br>XY Reach 사용률 %{x:.2f}%"
+            "<br>최대 Base–TCP XY 거리 %{customdata[0]:,.2f} mm"
+            "<br>설정 XY Reach %{customdata[1]:,.2f} mm"
+            "<br>최소 XY 여유 %{customdata[2]:,.2f} mm"
             "<br>위반 절점 %{customdata[3]:,.0f}개<extra></extra>"
         ),
         showlegend=False,
@@ -373,14 +424,18 @@ def _statistics_figures(
         x=100.0,
         line_dash="dash",
         line_color="#f59e0b",
-        annotation_text="설정 Reach 한계 100%",
+        annotation_text="설정 XY Reach 한계 100%",
         annotation_position="top left",
     )
     reach_figure.update_layout(
         template="plotly_dark",
         height=320,
         margin={"l": 55, "r": 15, "t": 45, "b": 40},
-        xaxis={"title": "Reach 사용률 [%]", "range": [0, reach_maximum], "ticksuffix": "%"},
+        xaxis={
+            "title": "XY Reach 사용률 [%]",
+            "range": [0, reach_maximum],
+            "ticksuffix": "%",
+        },
         yaxis={"autorange": "reversed"},
         paper_bgcolor="#0d1927",
         plot_bgcolor="#0d1927",

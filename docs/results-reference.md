@@ -1,6 +1,6 @@
 # 결과 및 산출물 참조
 
-WAAM Validator 1.0.0의 현재 결과 schema는 `3.0`입니다. 기본 Validation은 판정 재현과
+WAAM Validator 1.0.0의 현재 결과 schema는 `4.0`입니다. 기본 Validation은 판정 재현과
 자동 처리에 필요한 핵심 파일만 기록합니다.
 
 ## 상태와 출력 폴더
@@ -8,7 +8,7 @@ WAAM Validator 1.0.0의 현재 결과 schema는 `3.0`입니다. 기본 Validatio
 | 상태 | 의미 | 종료 코드 |
 | --- | --- | ---: |
 | `PASS` | 활성화된 모든 판정 기준 충족 | 0 |
-| `FAIL` | 계산은 완료됐지만 Reach·충돌·형상·공정 기준 위반 | 1 |
+| `FAIL` | 계산은 완료됐지만 XY Reach·충돌·형상·공정 기준 위반 | 1 |
 | `ERROR` | 입력·Target·계산·출력 오류로 계산을 완료하지 못함 | 2–5 |
 
 기본 경로는 `<JOB_DIR>/output/YYYY-MM-DD_HHMMSS/`입니다. 같은 초에 다시 실행하면
@@ -19,9 +19,9 @@ WAAM Validator 1.0.0의 현재 결과 schema는 `3.0`입니다. 기본 Validatio
 
 | 파일 | 내용 |
 | --- | --- |
-| `summary.json` | 최종 판정과 일정·Reach·충돌·형상 요약 |
+| `summary.json` | 최종 판정과 일정·XY Reach·충돌·형상 요약 |
 | `validation_report.md` | 사람이 읽는 결과 보고서 |
-| `robot_metrics.csv` | 로봇별 원시 시간·거리·속도·Reach |
+| `robot_metrics.csv` | 로봇별 원시 시간·거리·속도·XY Reach |
 | `collision_events.csv` | 병합된 Arm Envelope/TCP Radius 이벤트 |
 | `layer_metrics.csv` | 평가 layer별 면적과 형상 지표 |
 | `run.log` | 입력, 계산 단계와 판정 로그 |
@@ -35,7 +35,7 @@ WAAM Validator 1.0.0의 현재 결과 schema는 `3.0`입니다. 기본 Validatio
 
 ```json
 {
-  "schema_version": "3.0",
+  "schema_version": "4.0",
   "validator_version": "1.0.0",
   "status": "PASS",
   "input": {},
@@ -69,13 +69,13 @@ Layer 크기가 서로 달라도 면적 가중이 유지됩니다. 원본 mesh �
 
 ### `reach`
 
-`reach.passed`와 로봇별 다음 값을 제공합니다.
+`reach.distance_basis`는 항상 `"XY"`이며, `reach.passed`와 로봇별 다음 값을 제공합니다.
 
-- `reach_radius_mm`: Config 허용 반경
-- `maximum_reach_mm`: 원본 TCP 절점과 Base 사이의 최대 3D 거리
-- `minimum_margin_mm`: 허용 반경 − 최대 거리
-- `utilization_ratio`: 최대 거리 / 허용 반경
-- `violation_point_count`, `first_violation_s`, `last_violation_s`
+- `xy_reach_radius_mm`: Config의 허용 XY 반경
+- `maximum_xy_distance_mm`: 원본 TCP 절점과 Base 사이의 최대 XY 거리
+- `minimum_xy_margin_mm`: 허용 XY 반경 − 최대 XY 거리
+- `xy_utilization_ratio`: 최대 XY 거리 / 허용 XY 반경
+- `xy_violation_point_count`, `first_xy_violation_s`, `last_xy_violation_s`
 
 ### `collision`
 
@@ -108,7 +108,7 @@ TCP의 XY 위치를 저장합니다. `tcp_radius`는 TCP 끝점 사이 XY 거리
 ### `failure_reasons`와 `issues`
 
 `failure_reasons`는 최종 FAIL을 설명하는 결정론적 요약입니다. 순서는 입력/process,
-Reach, Arm Envelope, TCP Radius, 형상, 속도입니다.
+XY Reach, Arm Envelope, TCP Radius, 형상, 속도입니다.
 
 `issues`는 warning과 정상 FAIL을 만든 비치명 violation을 하나의 구조로 저장합니다.
 
@@ -135,7 +135,8 @@ Reach, Arm Envelope, TCP Radius, 형상, 속도입니다.
 - `inactive_after_completion_s = makespan_s - completion_s`
 - `deposition_length_mm`, `travel_length_mm`
 - `mean_deposition_speed_mm_s`, `mean_travel_speed_mm_s`
-- Reach 반경, 최대 사용거리, margin, utilization, 위반 절점 수
+- `xy_reach_radius_mm`, `maximum_xy_distance_mm`, `minimum_xy_margin_mm`
+- `xy_utilization_ratio`, `xy_violation_point_count`
 
 항상 다음 관계를 만족해야 합니다.
 
@@ -164,11 +165,10 @@ mean mode speed = mode distance / mode time
 Coverage·Underfill·Overfill·IoU와 개별 PASS를 기록합니다. Target만 있거나
 Deposition만 있는 layer도 평가하며 둘 다 수치적으로 빈 layer만 건너뜁니다.
 
-포함된 절차적 positive benchmark는 동일한 centerline에서 Target과 trajectory를 함께
-생성하므로 모든 layer가 거의 같은 100% 수치를 보이는 것이 정상입니다. 이 데이터는
-일관성 검사용이지 알고리즘 간 형상 성능 비교용이 아닙니다. 독립 underfill,
-overfill, offset fixture에서는 오차가 증가할수록 지표가 단조롭게 나빠지는 회귀 검사를
-수행합니다.
+Target과 trajectory를 동일한 centerline에서 생성한 local consistency benchmark는
+모든 layer가 거의 같은 100% 수치를 보이는 것이 정상입니다. 이 데이터는 일관성
+검사용이지 알고리즘 간 형상 성능 비교용이 아닙니다. 독립적인 underfill, overfill,
+offset 데이터를 사용해야 형상 오차에 따른 지표 변화를 검증할 수 있습니다.
 
 ## 치명 오류 결과
 
@@ -176,7 +176,7 @@ overfill, offset fixture에서는 오차가 증가할수록 지표가 단조롭�
 
 ```json
 {
-  "schema_version": "3.0",
+  "schema_version": "4.0",
   "validator_version": "1.0.0",
   "status": "ERROR",
   "code": "MISSING_TARGET",
@@ -203,7 +203,7 @@ atomic rename합니다. 기존 파일이 있으면 명시적인 `다시 생성` 
 route에는 노출하지 않습니다. UI는 산출물 생성 중에만 이 작은 상태 파일을 polling하고
 완료 즉시 중단합니다.
 
-결과 schema `1.1`과 `2.0`은 자동 변환하지 않습니다. 파일은 삭제하지 않지만 현재 UI는
+결과 schema `1.1`, `2.0`, `3.0`은 자동 변환하지 않습니다. 파일은 삭제하지 않지만 현재 UI는
 재실행이 필요하다고 안내합니다.
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)

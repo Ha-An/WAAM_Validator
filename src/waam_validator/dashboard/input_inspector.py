@@ -176,12 +176,20 @@ def _trajectory_details(trajectories: TrajectorySet, config: Config) -> JsonDict
                 "travel_length_mm": metrics.travel_length_mm,
                 "mean_deposition_speed_mm_s": metrics.mean_deposition_speed_mm_s,
                 "mean_travel_speed_mm_s": metrics.mean_travel_speed_mm_s,
-                "reach_radius_mm": reach_by_robot[trajectory.robot_id].reach_radius_mm,
-                "maximum_reach_mm": reach_by_robot[trajectory.robot_id].maximum_reach_mm,
-                "reach_margin_mm": reach_by_robot[trajectory.robot_id].minimum_margin_mm,
-                "reach_utilization_ratio": (reach_by_robot[trajectory.robot_id].utilization_ratio),
-                "reach_violation_point_count": (
-                    reach_by_robot[trajectory.robot_id].violation_point_count
+                "xy_reach_radius_mm": (
+                    reach_by_robot[trajectory.robot_id].xy_reach_radius_mm
+                ),
+                "maximum_xy_distance_mm": (
+                    reach_by_robot[trajectory.robot_id].maximum_xy_distance_mm
+                ),
+                "minimum_xy_margin_mm": (
+                    reach_by_robot[trajectory.robot_id].minimum_xy_margin_mm
+                ),
+                "xy_utilization_ratio": (
+                    reach_by_robot[trajectory.robot_id].xy_utilization_ratio
+                ),
+                "xy_violation_point_count": (
+                    reach_by_robot[trajectory.robot_id].xy_violation_point_count
                 ),
             }
         )

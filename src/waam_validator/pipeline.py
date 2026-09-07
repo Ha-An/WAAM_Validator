@@ -101,14 +101,14 @@ def _build_failure_reasons(
     reasons: list[str] = []
     speed_codes = {"DEPOSITION_SPEED_VIOLATION", "TRAVEL_SPEED_VIOLATION"}
     for issue in messages.violations:
-        if issue.code not in speed_codes | {"ROBOT_REACH_VIOLATION"}:
+        if issue.code not in speed_codes | {"ROBOT_XY_REACH_VIOLATION"}:
             reasons.append(f"Input/process validation failed: {issue.code} - {issue.message}")
     for item in reach.robots:
         if not item.passed:
             reasons.append(
-                f"ROBOT_REACH: R{item.robot_id} maximum TCP reach "
-                f"{item.maximum_reach_mm:.3f} mm exceeds configured "
-                f"{item.reach_radius_mm:.3f} mm."
+                f"ROBOT_XY_REACH: R{item.robot_id} maximum TCP XY distance "
+                f"{item.maximum_xy_distance_mm:.3f} mm exceeds configured "
+                f"XY Reach radius {item.xy_reach_radius_mm:.3f} mm."
             )
     if collision.arm_envelope_event_count:
         reasons.append(
@@ -195,7 +195,7 @@ def run_validation(
             LOGGER.info(
                 "R%d metrics: D=%.3f s/%.3f mm/%.6f mm/s, "
                 "T=%.3f s/%.3f mm/%.6f mm/s, W=%.3f s, "
-                "reach=%.3f/%.3f mm (%.3f%%), violations=%d",
+                "xy_reach=%.3f/%.3f mm (%.3f%%), violations=%d",
                 schedule_item.robot_id,
                 schedule_item.deposition_time_s,
                 schedule_item.deposition_length_mm,
@@ -204,10 +204,10 @@ def run_validation(
                 schedule_item.travel_length_mm,
                 schedule_item.mean_travel_speed_mm_s or 0.0,
                 schedule_item.wait_time_s,
-                reach_item.maximum_reach_mm,
-                reach_item.reach_radius_mm,
-                reach_item.utilization_ratio * 100.0,
-                reach_item.violation_point_count,
+                reach_item.maximum_xy_distance_mm,
+                reach_item.xy_reach_radius_mm,
+                reach_item.xy_utilization_ratio * 100.0,
+                reach_item.xy_violation_point_count,
             )
         _report_progress(progress_callback, "collision", "충돌 시뮬레이션을 실행 중입니다.")
         collision = run_collision_analysis(
@@ -398,7 +398,7 @@ def check_input(input_dir: Path) -> tuple[int, bool, int]:
     _, config_path, trajectory_path, target_path = _resolve_input(input_dir)
     config = load_config(config_path)
     trajectories = load_trajectory_csv(trajectory_path, config)
-    # Semantic violations returned as messages (reach, wait movement, and
+    # Semantic violations returned as messages (XY reach, wait movement, and
     # configured speed failures) are valid, runnable inputs whose full result is
     # FAIL. Fatal interval/layer problems are raised directly by the validator.
     validate_trajectory_set(trajectories, config)

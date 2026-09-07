@@ -8,22 +8,22 @@ simulation:
 robots:
   - id: 1
     base_xyz_mm: [-1400.0, 0.0, 0.0]
-    home_xyz_mm: [-1000.0, 0.0, 1700.0]
+    home_xyz_mm: [-1000.0, 0.0, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
   - id: 2
     base_xyz_mm: [700.0, -1212.435565, 0.0]
-    home_xyz_mm: [500.0, -866.025404, 1700.0]
+    home_xyz_mm: [500.0, -866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
   - id: 3
     base_xyz_mm: [700.0, 1212.435565, 0.0]
-    home_xyz_mm: [500.0, 866.025404, 1700.0]
+    home_xyz_mm: [500.0, 866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 2000.0
 process:
   deposition_speed_mm_s: 8.0
   travel_speed_mm_s: 150.0
@@ -31,7 +31,7 @@ process:
   bead_width_mm: 8.0
   build_plane_z_mm: 0.0
   tcp_z_reference: center
-  safe_travel_z_mm: 1700.0
+  safe_travel_z_mm: 1000.0
   arc_on_time_s: 1.0
   arc_off_time_s: 1.0
 workspace:

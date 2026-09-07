@@ -48,7 +48,7 @@ preview를 만듭니다.
 - Robot별 Arm Capsule 반경·전체 폭, 공통 안전거리와 pair별 요구 중심선 간격
 - Trajectory 전체 행 수, makespan, 로봇별 시간·XYZ 범위, D/T/W 시간·거리·속도
 - Target의 정점·면·body 수, 경계·치수·체적·watertight 상태
-- Trajectory 의미, Reach 예상 위반, Target/trajectory 좌표 일관성
+- Trajectory 의미, XY Reach 예상 위반, Target/trajectory 좌표 일관성
 
 충돌 시뮬레이션, Target layer slicing, 전체 형상 비교와 결과 산출물 생성은 이때
 실행하지 않습니다.
@@ -59,7 +59,7 @@ preview를 만듭니다.
 | --- | --- | --- |
 | `READY` | 검사 항목에 문제가 없음 | 활성화 |
 | `WARNING` | 비치명 이슈가 있으나 실행 가능 | 활성화 |
-| `EXPECTED_FAIL` | Reach·Wait·설정된 속도 기준 등 정상 FAIL 예상 | 활성화 |
+| `EXPECTED_FAIL` | XY Reach·Wait·설정된 속도 기준 등 정상 FAIL 예상 | 활성화 |
 | `BLOCKED` | 파싱·Config·좌표·Deposition layer 등 치명 오류 | 비활성화 |
 
 `EXPECTED_FAIL`은 실행 오류가 아닙니다. 전체 계산과 결과 저장이 가능하지만 최종
@@ -76,7 +76,7 @@ preview를 만듭니다.
 - Target STL
 - Robot Base와 Base XY 삼각형
 - 설정한 경우, Base와 구분되는 명목 Home TCP 위치
-- 각 Base 중심의 반투명 3D Reach 구
+- 각 Base 중심의 열린 반투명 XY Reach 원통과 Base Z 위치의 footprint 원
 - World XY의 원형 workspace
 - 로봇별 Deposition, Travel, Wait trajectory
 
@@ -120,10 +120,12 @@ Deposition과 Travel interval의 3D 누적 TCP 거리입니다. 시간이 짧은
 설정 속도가 Deposition보다 크면 Travel 거리가 더 길 수 있습니다. 정확한 값은
 trajectory 정보와 hover에서 확인합니다.
 
-#### 로봇별 Reach 사용률
+#### 로봇별 XY Reach 사용률
 
-`Base에서 가장 먼 TCP까지의 3D 거리 / 설정 Reach 반경`입니다. 100%는 설정 한계,
-100% 초과는 Reach FAIL을 뜻합니다. 경로 길이와는 다른 지표입니다.
+`Base에서 가장 먼 TCP까지의 XY 거리 / 설정 XY Reach 반경`입니다. Z는 계산에서
+제외됩니다. 100%는 설정 한계, 100% 초과는 XY Reach FAIL을 뜻하며 경로 길이와는
+다른 지표입니다. 3D 화면의 원통은 표시 중인 Z 범위만 관통하지만 판정 자체에는
+상·하한이 없습니다.
 
 ## 화면 2: Validation 진행
 
@@ -156,13 +158,13 @@ UI는 실행 중에만 상태 파일의 작은 진행 정보와 제한된 log ta
 
 ## 화면 3: 결과
 
-상단에는 결론에 필요한 네 항목만 표시합니다. 전체 작업시간, Robot Reach, 로봇 간
+상단에는 결론에 필요한 네 항목만 표시합니다. 전체 작업시간, Robot XY Reach, 로봇 간
 충돌 안전, 적층 형상입니다. 최종 PASS/FAIL과 실행 폴더·시각은 바로 위 결과 배너에서
 확인합니다.
 
 ### 판정 요약
 
-FAIL 사유와 추가 확인사항만 모아서 보여줍니다. Reach, 2D 충돌 안전, Layer 형상 비교의
+FAIL 사유와 추가 확인사항만 모아서 보여줍니다. XY Reach, 2D 충돌 안전, Layer 형상 비교의
 결론은 위쪽 핵심 카드에 이미 있으므로 이 탭에서 반복하지 않습니다. Warning은 결과를
 무조건 FAIL로 만들지 않으므로 FAIL 사유와 구분됩니다. 정상 FAIL을 만든 violation
 기록은 치명적인 실행 `ERROR`와 혼동하지 않도록 `FAIL 세부 판정 기록` 펼침 영역에
@@ -173,7 +175,7 @@ FAIL 사유와 추가 확인사항만 모아서 보여줍니다. Reach, 2D 충�
 상태 시간 그래프는 공통 Makespan을 100%로 두고 Deposition + Travel + Wait +
 완료 후 비활성을 합해 로봇마다 정확히 100%가 되도록 표시합니다. 상세 표에는
 completion의 초 값과 시·분·초 표현, D/T/W 시간, D/T 거리·평균속도,
-최대/한계 Reach와 margin을 표시합니다.
+최대/한계 XY Reach와 XY margin을 표시합니다.
 
 ### 충돌 안전
 
@@ -198,9 +200,9 @@ Layer 그래프의 위쪽은 Coverage·IoU이고 아래쪽은 작은 Underfill·
 임계값은 핵심 지표 아래에 항상 표시됩니다.
 
 각 지표의 Layer 간 편차가 표시 허용오차 안이면 동일 범위라고 명시하고 반복되는 평면
-그래프도 접지 않고 항상 표시합니다. 포함된 positive benchmark는 같은 centerline에서 Target과
-trajectory를 함께 만든 consistency test이므로 거의 100%가 의도된 결과입니다. 실제
-알고리즘 평가는 독립적으로 만든 Target과 trajectory로 수행해야 합니다.
+그래프도 접지 않고 항상 표시합니다. Target과 trajectory를 같은 centerline에서 만든
+local consistency benchmark는 거의 100%가 의도된 결과입니다. 실제 알고리즘 평가는
+독립적으로 만든 Target과 trajectory로 수행해야 합니다.
 
 ### 산출물
 
@@ -240,8 +242,8 @@ trajectory를 함께 만든 consistency test이므로 거의 100%가 의도된 �
 - `최근 결과 보기`: 현재 입력 signature와 지원하는 결과 schema가 일치하는 완료 결과가 있을 때만 표시
 
 정상 Validation 결과에는 `validation_inputs.json` 입력 지문이 항상 기록됩니다. 기존
-결과 폴더는 자동 삭제하거나 덮어쓰지 않습니다. 결과 schema `1.1`과 `2.0`은 현재
-schema `3.0` 형식이 아니므로 최근 결과로 열거나 추가 산출물을 붙이지 않고 재실행을
+결과 폴더는 자동 삭제하거나 덮어쓰지 않습니다. 결과 schema `1.1`, `2.0`, `3.0`은 현재
+schema `4.0` 형식이 아니므로 최근 결과로 열거나 추가 산출물을 붙이지 않고 재실행을
 안내합니다.
 
 ## 문제 해결
@@ -269,4 +271,4 @@ process가 실행 중이면 동시에 새 Validation을 시작하지 않습니�
 
 정상 동작입니다. `산출물` 탭에서 필요한 frame 간격으로 생성하십시오.
 
-[문서 안내로 돌아가기](README.md)
+[루트 README로 돌아가기](../README.md)
