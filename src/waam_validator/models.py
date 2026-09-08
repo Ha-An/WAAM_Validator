@@ -218,6 +218,7 @@ class ValidationResult:
     violations: list[ValidationIssue] = field(default_factory=list)
     failure_reasons: list[str] = field(default_factory=list)
     checks_enabled: dict[str, bool] = field(default_factory=dict)
+    config_snapshot: dict[str, Any] = field(default_factory=dict)
 
     @property
     def collision_free(self) -> bool:

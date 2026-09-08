@@ -417,9 +417,10 @@ def generate_replay_html(
         deposition = [_deposition_path(trajectory) for trajectory in trajectories.robots]
         vertices = np.asarray(target_mesh.vertices)
         faces = np.asarray(target_mesh.faces)
-        bases = [list(map(float, robot.base_xyz_mm)) for robot in config.robots]
-        radii = [float(robot.tcp_radius_mm) for robot in config.robots]
-        arm_radii = [float(robot.arm_envelope_radius_mm) for robot in config.robots]
+        robots_by_id = tuple(config.robot(robot_id) for robot_id in (1, 2, 3))
+        bases = [list(map(float, robot.base_xyz_mm)) for robot in robots_by_id]
+        radii = [float(robot.tcp_radius_mm) for robot in robots_by_id]
+        arm_radii = [float(robot.arm_envelope_radius_mm) for robot in robots_by_id]
         initial = positions[0]
         figure = make_subplots(
             rows=1,
@@ -451,7 +452,7 @@ def generate_replay_html(
             "decisionCapsules": [],
             "centerlines2d": [],
         }
-        for index, robot in enumerate(config.robots):
+        for index, robot in enumerate(robots_by_id):
             base = bases[index]
             tcp = initial[index]
             color = colors[0][index]
@@ -484,7 +485,7 @@ def generate_replay_html(
                 row=1,
                 col=1,
             )
-        for index, robot in enumerate(config.robots):
+        for index, robot in enumerate(robots_by_id):
             trace_indices["deposition3d"].append(len(figure.data))
             figure.add_trace(
                 go.Scatter3d(
@@ -526,7 +527,7 @@ def generate_replay_html(
             row=1,
             col=2,
         )
-        for index, robot in enumerate(config.robots):
+        for index, robot in enumerate(robots_by_id):
             base = bases[index]
             tcp = initial[index]
             color = colors[0][index]

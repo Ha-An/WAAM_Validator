@@ -78,6 +78,19 @@ def tail_log(output_dir: Path, line_count: int = 14) -> str:
     return "\n".join(lines[-max(1, line_count) :])
 
 
+def _completed_result_verdict(output_dir: Path) -> str:
+    """Infer a verdict from durable result markers, never a bare process code.
+
+    Python also uses exit code 1 for an unhandled interpreter failure.  Treating
+    every such exit as a normal validation FAIL would hide a crashed worker.
+    """
+    if (output_dir / "error.json").is_file():
+        return "ERROR"
+    summary = _read_status(output_dir / "summary.json")
+    verdict = str(summary.get("status", "")).upper()
+    return verdict if verdict in {"PASS", "FAIL"} else "ERROR"
+
+
 class ValidationRunManager:
     """Run at most one validator worker without blocking the Dash server."""
 
@@ -147,8 +160,9 @@ class ValidationRunManager:
                         stage="process_exit",
                         message="Validation 프로세스가 완료 상태를 기록하지 못하고 종료되었습니다.",
                     )
-                inferred = "PASS" if exit_code == 0 else "FAIL" if exit_code == 1 else "ERROR"
-                status.setdefault("verdict", inferred)
+                inferred = _completed_result_verdict(active.output_dir)
+                if str(status.get("verdict", "")).upper() not in {"PASS", "FAIL", "ERROR"}:
+                    status["verdict"] = inferred
             elapsed = max(0.0, time.monotonic() - active.started_monotonic)
             return {
                 **status,
@@ -190,20 +204,34 @@ class ReplayRunManager:
                 },
             )
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            process = subprocess.Popen(
-                [
-                    self._python,
-                    "-m",
-                    "waam_validator.dashboard.replay_worker",
-                    str(job.path),
-                    str(run.directory),
-                    f"{interval_s:.9g}",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creation_flags,
-            )
+            try:
+                process = subprocess.Popen(
+                    [
+                        self._python,
+                        "-m",
+                        "waam_validator.dashboard.replay_worker",
+                        str(job.path),
+                        str(run.directory),
+                        f"{interval_s:.9g}",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creation_flags,
+                )
+            except OSError as exc:
+                write_json_atomic(
+                    run.directory / REPLAY_STATUS,
+                    {
+                        "state": "FINISHED",
+                        "stage": "failed",
+                        "message": f"Replay 생성 프로세스를 시작하지 못했습니다: {exc}",
+                        "verdict": "ERROR",
+                        "progress": 0.0,
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                )
+                raise
             now = datetime.now()
             self._active = ActiveReplay(
                 job,
@@ -231,19 +259,33 @@ class ReplayRunManager:
                 },
             )
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            process = subprocess.Popen(
-                [
-                    self._python,
-                    "-m",
-                    "waam_validator.dashboard.deposited_stl_worker",
-                    str(job.path),
-                    str(run.directory),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creation_flags,
-            )
+            try:
+                process = subprocess.Popen(
+                    [
+                        self._python,
+                        "-m",
+                        "waam_validator.dashboard.deposited_stl_worker",
+                        str(job.path),
+                        str(run.directory),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creation_flags,
+                )
+            except OSError as exc:
+                write_json_atomic(
+                    run.directory / DEPOSITED_STL_STATUS,
+                    {
+                        "state": "FINISHED",
+                        "stage": "failed",
+                        "message": f"적층 STL 생성 프로세스를 시작하지 못했습니다: {exc}",
+                        "verdict": "ERROR",
+                        "progress": 0.0,
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    },
+                )
+                raise
             now = datetime.now()
             self._active = ActiveReplay(
                 job,

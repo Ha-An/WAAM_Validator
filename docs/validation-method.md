@@ -82,10 +82,11 @@ xy_utilization = maximum XY distance / configured XY reach radius
 xy_margin = configured XY reach radius - maximum XY distance
 ```
 
-모든 원본 절점을 검사하며 `xy_reach > radius`인 절점 수와 최초·최종 위반 시간을
+모든 원본 절점을 검사하며 `xy_reach > radius + geometry_epsilon_mm`인 절점 수와 최초·최종 위반 시간을
 기록합니다. XY 원은 convex이고 trajectory는 절점 사이 선형 보간이므로 두 끝점의
 XY 좌표가 원 안에 있으면 그 interval 전체도 원 안에 있습니다. 경계와 동일한 점은
-통과합니다. 한 점이라도 초과하면 해당 로봇과 전체 XY Reach 판정이 `FAIL`입니다.
+통과하며 수치 오차를 위한 `geometry_epsilon_mm` 이내의 미세 초과도 통과합니다. 한 점이라도
+이 범위를 초과하면 해당 로봇과 전체 XY Reach 판정이 `FAIL`입니다.
 
 XY Reach는 Z 높이, 기구학적 자세나 관절 제한을 고려하지 않는 Base–TCP 수평거리
 기반의 1차 계획 검사입니다.

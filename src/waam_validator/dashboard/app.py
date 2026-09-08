@@ -20,7 +20,7 @@ from dash.exceptions import PreventUpdate
 from flask import abort, send_file
 
 from .._version import __version__
-from ..config.loader import load_config
+from ..config.models import Config
 from ..models import TrajectorySet
 from ..provenance import RESULT_SCHEMA_VERSION, verify_validation_inputs
 from ..visualization.replay import _capsule_xy
@@ -31,11 +31,12 @@ from .data import (
     RunRecord,
     load_latest_matching_run,
     load_latest_run,
+    load_result_config,
     load_run_directory,
-    load_thresholds,
     read_csv_records,
     read_csv_window,
     resolve_single_job_artifact,
+    thresholds_from_config,
 )
 from .input_inspector import (
     inspect_dashboard_input_bundle,
@@ -128,7 +129,13 @@ class _ContextRegistry:
             token = self._tokens_by_path.get(resolved)
             if token is None:
                 token = uuid.uuid4().hex
-                self._tokens_by_path[resolved] = token
+            # The product is a single-job UI. Retaining every previously
+            # inspected large trajectory would make memory grow with each
+            # folder change, so only the active context stays addressable.
+            self._paths.clear()
+            self._trajectories.clear()
+            self._tokens_by_path.clear()
+            self._tokens_by_path[resolved] = token
             self._paths[token] = resolved
             self._trajectories[token] = trajectories
         return token
@@ -787,7 +794,7 @@ def _result_findings_content(payload: JsonDict) -> html.Div:
     return html.Div(children, className="result-findings")
 
 
-def _arm_envelope_snapshot(payload: JsonDict, job_dir: Path) -> go.Figure:
+def _arm_envelope_snapshot(payload: JsonDict, config: Config | None) -> go.Figure:
     collision = payload.get("collision")
     arm = collision.get("arm_envelope") if isinstance(collision, dict) else None
     if not isinstance(arm, dict):
@@ -796,8 +803,9 @@ def _arm_envelope_snapshot(payload: JsonDict, job_dir: Path) -> go.Figure:
     closest = arm.get("closest_points_xy_mm")
     if not isinstance(tcp_positions, list) or len(tcp_positions) != 3:
         return _empty_figure("Arm Envelope TCP 위치 정보가 없습니다", height=520)
+    if config is None:
+        return _empty_figure("Validation 당시 Config snapshot이 없습니다", height=520)
     try:
-        config = load_config(job_dir / "config.yaml")
         figure = go.Figure()
         workspace_x, workspace_y = _capsule_xy(
             config.workspace.center_xy_mm,
@@ -815,7 +823,8 @@ def _arm_envelope_snapshot(payload: JsonDict, job_dir: Path) -> go.Figure:
                 name="Workspace",
             )
         )
-        bases = [robot.base_xyz_mm[:2] for robot in config.robots]
+        robots_by_id = tuple(config.robot(robot_id) for robot_id in (1, 2, 3))
+        bases = [robot.base_xyz_mm[:2] for robot in robots_by_id]
         triangle = [*bases, bases[0]]
         figure.add_trace(
             go.Scatter(
@@ -828,7 +837,7 @@ def _arm_envelope_snapshot(payload: JsonDict, job_dir: Path) -> go.Figure:
             )
         )
         colors = ("#2f8fff", "#ff9d42", "#34d399")
-        for index, (robot, tcp_raw) in enumerate(zip(config.robots, tcp_positions, strict=True)):
+        for index, (robot, tcp_raw) in enumerate(zip(robots_by_id, tcp_positions, strict=True)):
             if not isinstance(tcp_raw, list) or len(tcp_raw) != 2:
                 continue
             tcp = (float(tcp_raw[0]), float(tcp_raw[1]))
@@ -1030,6 +1039,8 @@ def _result_view(
     collision = payload.get("collision", {}) if isinstance(payload.get("collision"), dict) else {}
     shape = payload.get("shape", {}) if isinstance(payload.get("shape"), dict) else {}
     reach = payload.get("reach", {}) if isinstance(payload.get("reach"), dict) else {}
+    result_config = load_result_config(run)
+    result_thresholds = thresholds_from_config(result_config)
     csv_errors: list[JsonDict] = []
 
     def load_rows(filename: str) -> list[JsonDict]:
@@ -1159,15 +1170,16 @@ def _result_view(
     replay_verdict = str(replay_status_payload.get("verdict", "")).upper()
     replay_state = str(replay_status_payload.get("state", "IDLE")).upper()
     replay_status_message = str(replay_status_payload.get("message", ""))
-    if has_replay:
-        replay_status_message = replay_status_message or "Replay 생성이 완료되었습니다."
-        replay_status_class = "replay-status is-success"
-    elif replay_verdict == "ERROR":
-        replay_status_message = f"Replay 생성 실패: {replay_status_message}"
+    if replay_verdict == "ERROR":
+        retained = " 기존 Replay 파일은 유지했습니다." if has_replay else ""
+        replay_status_message = f"Replay 생성 실패: {replay_status_message}{retained}"
         replay_status_class = "replay-status is-error"
     elif replay_state == "RUNNING":
         replay_status_message = replay_status_message or "Replay를 생성하고 있습니다."
         replay_status_class = "replay-status is-running"
+    elif has_replay:
+        replay_status_message = replay_status_message or "Replay 생성이 완료되었습니다."
+        replay_status_class = "replay-status is-success"
     else:
         replay_status_message = replay_status_message or "Replay 생성 대기"
         replay_status_class = "replay-status is-idle"
@@ -1177,15 +1189,18 @@ def _result_view(
     )
     stl_status_payload = read_deposited_stl_status(run.directory) or {}
     stl_progress = min(1.0, max(0.0, float(stl_status_payload.get("progress", 0.0) or 0.0)))
-    if has_deposited_stl:
-        stl_status_message = "deposited.stl 생성이 완료되었습니다."
-        stl_status_class = "replay-status is-success"
-    elif str(stl_status_payload.get("verdict", "")).upper() == "ERROR":
-        stl_status_message = f"적층 STL 생성 실패: {stl_status_payload.get('message', '')}"
+    if str(stl_status_payload.get("verdict", "")).upper() == "ERROR":
+        retained = " 기존 deposited.stl 파일은 유지했습니다." if has_deposited_stl else ""
+        stl_status_message = (
+            f"적층 STL 생성 실패: {stl_status_payload.get('message', '')}{retained}"
+        )
         stl_status_class = "replay-status is-error"
     elif str(stl_status_payload.get("state", "")).upper() == "RUNNING":
         stl_status_message = str(stl_status_payload.get("message", "적층 STL 생성 중입니다."))
         stl_status_class = "replay-status is-running"
+    elif has_deposited_stl:
+        stl_status_message = "deposited.stl 생성이 완료되었습니다."
+        stl_status_class = "replay-status is-success"
     else:
         stl_status_message = "적층 STL 생성 대기"
         stl_status_class = "replay-status is-idle"
@@ -1371,7 +1386,7 @@ def _result_view(
                                             className="muted-copy",
                                         ),
                                         dcc.Graph(
-                                            figure=_arm_envelope_snapshot(payload, job.path),
+                                            figure=_arm_envelope_snapshot(payload, result_config),
                                             config=_GRAPH_CONFIG,
                                             className="arm-snapshot-graph",
                                         ),
@@ -1413,7 +1428,7 @@ def _result_view(
                                             [
                                                 html.H4("형상 판정 기준"),
                                                 html.Div(
-                                                    _threshold_content(load_thresholds(job.path)),
+                                                    _threshold_content(result_thresholds),
                                                     className="threshold-details",
                                                 ),
                                             ],
@@ -1437,7 +1452,7 @@ def _result_view(
                                         ),
                                         dcc.Graph(
                                             figure=_shape_figure(
-                                                layer_rows, load_thresholds(job.path)
+                                                layer_rows, result_thresholds
                                             ),
                                             config=_GRAPH_CONFIG,
                                         ),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import plotly.graph_objects as go
 from dash import html
 from plotly.subplots import make_subplots
@@ -119,28 +120,92 @@ def robot_time_figure(rows: list[JsonDict]) -> go.Figure:
 def collision_timeline(rows: list[JsonDict]) -> go.Figure:
     if not rows:
         return empty_figure("충돌 이벤트 없음", height=300)
-    limited = rows[:1000]
-    labels = [
-        f"{row.get('type', 'EVENT')} · R{row.get('robot_a')}-R{row.get('robot_b')}"
-        for row in limited
-    ]
-    figure = go.Figure(
-        go.Bar(
-            y=labels,
-            x=[float(row.get("duration_s", 0.0) or 0.0) for row in limited],
-            base=[float(row.get("start_s", 0.0) or 0.0) for row in limited],
-            orientation="h",
-            marker={
-                "color": [
-                    "#ff6376" if row.get("type") == "ARM_ENVELOPE" else "#f5b942" for row in limited
-                ],
-                "line": {"width": 0},
-            },
-            hovertemplate="%{y}<br>시작 %{base:,.3f} s<br>지속 %{x:,.3f} s<extra></extra>",
+    figure = go.Figure()
+    colors = {"ARM_ENVELOPE": "#ff6376", "TCP_RADIUS": "#f5b942"}
+    for collision_type in ("ARM_ENVELOPE", "TCP_RADIUS"):
+        typed = [row for row in rows if row.get("type") == collision_type]
+        if not typed:
+            continue
+        labels = [
+            f"{collision_type} · R{row.get('robot_a')}-R{row.get('robot_b')}" for row in typed
+        ]
+        durations = np.asarray(
+            [float(row.get("duration_s", 0.0) or 0.0) for row in typed],
+            dtype=np.float64,
         )
+        starts = np.asarray(
+            [float(row.get("start_s", 0.0) or 0.0) for row in typed],
+            dtype=np.float64,
+        )
+        customdata = np.asarray(
+            [
+            [
+                int(row.get("event_id", 0) or 0),
+                float(row.get("end_s", 0.0) or 0.0),
+                float(row.get("minimum_safety_margin_mm", 0.0) or 0.0),
+            ]
+            for row in typed
+            ],
+            dtype=np.float64,
+        )
+        figure.add_trace(
+            go.Bar(
+                y=labels,
+                x=durations,
+                base=starts,
+                orientation="h",
+                name=collision_type,
+                marker={"color": colors[collision_type], "line": {"width": 0}},
+                customdata=customdata,
+                hovertemplate=(
+                    "%{fullData.name} · %{y}<br>Event %{customdata[0]}"
+                    "<br>시작 %{base:,.3f} s · 종료 %{customdata[1]:,.3f} s"
+                    "<br>지속 %{x:,.3f} s · 최소 여유 %{customdata[2]:,.3f} mm"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        zero_duration = durations <= 0.0
+        if np.any(zero_duration):
+            figure.add_trace(
+                go.Scattergl(
+                    x=starts[zero_duration],
+                    y=np.asarray(labels)[zero_duration],
+                    mode="markers",
+                    name=f"{collision_type} 순간 이벤트",
+                    marker={"color": colors[collision_type], "size": 8, "symbol": "line-ns"},
+                    customdata=customdata[zero_duration],
+                    hovertemplate=(
+                        "%{fullData.name} · %{y}<br>Event %{customdata[0]}"
+                        "<br>시각 %{x:,.3f} s · 최소 여유 %{customdata[2]:,.3f} mm"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+    lane_count = len(
+        {
+            (row.get("type"), row.get("robot_a"), row.get("robot_b"))
+            for row in rows
+        }
     )
-    figure.update_layout(xaxis_title="시간 [s]", yaxis_title="Event", showlegend=False)
-    return style_figure(figure, height=max(300, min(650, 115 + 26 * len(limited))))
+    figure.update_layout(
+        xaxis_title="시간 [s]",
+        yaxis_title="Robot pair",
+        barmode="overlay",
+        annotations=[
+            {
+                "text": f"전체 {len(rows):,}개 이벤트 표시",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 1.0,
+                "y": 1.18,
+                "xanchor": "right",
+                "showarrow": False,
+                "font": {"color": "#aebed0", "size": 12},
+            }
+        ],
+    )
+    return style_figure(figure, height=max(300, 170 + 42 * lane_count))
 
 
 def shape_figure(rows: list[JsonDict], thresholds: JsonDict) -> go.Figure:

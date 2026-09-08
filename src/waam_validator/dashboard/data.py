@@ -11,8 +11,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from ..config.loader import load_config
-from ..errors import WaamValidatorError
+from ..config.models import Config
 from ..provenance import RESULT_SCHEMA_VERSION, verify_validation_inputs
 
 JsonDict = dict[str, Any]
@@ -177,7 +176,7 @@ def load_latest_run(job_dir: Path) -> RunRecord | None:
     run_dir = latest_completed_run(job_dir)
     if run_dir is None:
         return None
-    source = run_dir / ("summary.json" if (run_dir / "summary.json").is_file() else "error.json")
+    source = run_dir / ("error.json" if (run_dir / "error.json").is_file() else "summary.json")
     try:
         payload = _read_json(source)
         status = str(payload.get("status", "ERROR")).upper()
@@ -197,7 +196,9 @@ def load_latest_run(job_dir: Path) -> RunRecord | None:
 def load_run_directory(run_dir: Path) -> RunRecord:
     """Load one exact completed output directory without latest-run rediscovery."""
     resolved = run_dir.expanduser().resolve()
-    source = resolved / ("summary.json" if (resolved / "summary.json").is_file() else "error.json")
+    source = resolved / (
+        "error.json" if (resolved / "error.json").is_file() else "summary.json"
+    )
     if not source.is_file():
         raise DashboardDataError(f"완료된 결과가 아닙니다: {resolved}")
     payload = _read_json(source)
@@ -216,18 +217,33 @@ def load_latest_matching_run(job_dir: Path) -> RunRecord | None:
             run = load_run_directory(run_dir)
         except DashboardDataError:
             continue
+        if run.payload.get("schema_version") != RESULT_SCHEMA_VERSION:
+            continue
         matches, _ = verify_validation_inputs(job_dir, run_dir)
-        if run.payload.get("schema_version") == RESULT_SCHEMA_VERSION and matches:
+        if matches:
             return run
     return None
 
 
-def load_thresholds(job_dir: Path) -> JsonDict:
-    """Load display thresholds from the same validated configuration model."""
+def load_result_config(run: RunRecord) -> Config | None:
+    """Load the immutable Config snapshot embedded in a completed result."""
     try:
-        config = load_config(job_dir / "config.yaml")
-    except WaamValidatorError as exc:
-        return {"error": f"{exc.code} - {exc.message}"}
+        manifest = _read_json(run.directory / "validation_inputs.json")
+    except DashboardDataError:
+        return None
+    raw = manifest.get("config")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return Config.model_validate(raw)
+    except ValueError:
+        return None
+
+
+def thresholds_from_config(config: Config | None) -> JsonDict:
+    """Return shape thresholds from a result-local Config snapshot."""
+    if config is None:
+        return {"error": "Validation 당시 Config snapshot이 없습니다. 다시 실행하세요."}
     shape = config.shape_validation
     return {
         "minimum_overall_coverage": shape.minimum_overall_coverage,

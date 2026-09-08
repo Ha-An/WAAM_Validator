@@ -157,7 +157,7 @@ waam-validator ui C:\data\my_job --no-browser
 | --- | --- |
 | `waam-validator` 명령을 찾지 못함 | 가상환경 활성화 또는 editable install 여부 |
 | `schema_version` 오류 | Config에는 이 필드를 사용하지 않으므로 해당 행을 제거했는지 |
-| 입력 확인 후 실행 버튼 비활성 | 입력이 BLOCKED인지, 검사 후 파일 크기·수정 시각이 바뀌었는지 |
+| 입력 확인 후 실행 버튼 비활성 | 입력이 BLOCKED인지, 검사 후 파일 내용·크기·수정 시각이 바뀌었는지 |
 | UI가 열리지 않음 | port 사용 여부, `--port` 변경, 출력된 URL 직접 접속 |
 | `FAIL`인데 결과 파일이 있음 | 정상 동작. 계산 가능한 기준 위반은 결과를 저장하고 종료 코드 1 반환 |
 | Replay가 없음 | 기본 미생성. UI의 `산출물` 탭에서 별도 생성 |

@@ -15,6 +15,7 @@ from ..config.models import Config
 from ..constants import MODE_D, MODE_T, MODE_W
 from ..errors import ValidationIssue, ValidationMessages, WaamValidatorError
 from ..models import TrajectorySet
+from ..provenance import file_fingerprint
 from ..schedule.metrics import compute_schedule_metrics
 from ..shape.target import load_target_mesh, validate_coordinate_consistency
 from ..trajectory.loader import load_trajectory_csv
@@ -97,21 +98,20 @@ def resolve_input_directory(job_dir: str | Path) -> DashboardInputPaths:
 
 
 def input_signature(paths: DashboardInputPaths) -> JsonDict:
-    """Return a cheap signature used to invalidate a stale preflight."""
+    """Return a content-backed signature used to invalidate a stale preflight."""
     result: JsonDict = {}
     for filename, path in (
         ("config.yaml", paths.config),
         ("trajectory.csv", paths.trajectory),
         ("target.stl", paths.target),
     ):
-        stat = path.stat()
+        fingerprint = file_fingerprint(path)
+        # Nanosecond timestamps exceed JavaScript's safe integer range. This
+        # signature crosses a browser Store, so serialize that one field only.
+        fingerprint["mtime_ns"] = str(fingerprint["mtime_ns"])
         result[filename] = {
             "path": str(path),
-            "size_bytes": stat.st_size,
-            # This signature is stored in a Dash browser Store. Nanosecond
-            # timestamps exceed JavaScript's safe integer range, so keeping the
-            # value as text prevents a browser round trip from changing the signature.
-            "mtime_ns": str(stat.st_mtime_ns),
+            **fingerprint,
         }
     return result
 
@@ -223,6 +223,7 @@ def inspect_dashboard_input_bundle(
     paths: DashboardInputPaths,
 ) -> tuple[InputInspection, Config | None, TrajectorySet | None, Any | None]:
     """Read inputs once and retain parsed objects for a bounded UI preview."""
+    starting_signature = input_signature(paths)
     blocking: list[JsonDict] = []
     warnings: list[JsonDict] = []
     expected_failures: list[JsonDict] = []
@@ -271,6 +272,16 @@ def inspect_dashboard_input_bundle(
         except WaamValidatorError as exc:
             blocking.append({"code": exc.code, "message": exc.message, "source": "combined"})
 
+    ending_signature = input_signature(paths)
+    if ending_signature != starting_signature:
+        blocking.append(
+            {
+                "code": "INPUT_CHANGED_DURING_INSPECTION",
+                "message": "입력 확인 중 파일이 변경되었습니다. 저장이 끝난 뒤 다시 확인하세요.",
+                "source": "combined",
+            }
+        )
+
     status: InspectionStatus
     if blocking:
         status = "BLOCKED"
@@ -285,7 +296,7 @@ def inspect_dashboard_input_bundle(
         can_run=not blocking,
         checked_at=datetime.now().isoformat(timespec="seconds"),
         paths=paths.as_dict(),
-        signature=input_signature(paths),
+        signature=ending_signature,
         files=files,
         config=config_details,
         trajectory=trajectory_details,

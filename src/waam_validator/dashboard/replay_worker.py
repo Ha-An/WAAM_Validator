@@ -91,7 +91,12 @@ def run_replay_worker(job_dir: Path, run_dir: Path, interval_s: float) -> int:
             message="Replay 입력을 불러오는 중입니다.",
             progress=0.0,
         )
-        unchanged, message = verify_validation_inputs(job_dir, run_dir)
+        starting_signature = input_signature(job_dir)
+        unchanged, message = verify_validation_inputs(
+            job_dir,
+            run_dir,
+            current_signature=starting_signature,
+        )
         if not unchanged:
             raise ValueError(message)
         config = load_config(job_dir / "config.yaml")
@@ -134,6 +139,10 @@ def run_replay_worker(job_dir: Path, run_dir: Path, interval_s: float) -> int:
             completed_frames=stats.frame_count,
             total_frames=stats.frame_count,
         )
+        if input_signature(job_dir) != starting_signature:
+            raise ValueError(
+                "Replay 생성 중 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
+            )
         os.replace(temporary, run_dir / "replay.html")
         duration_s = time.monotonic() - started
         size_bytes = (run_dir / "replay.html").stat().st_size
@@ -146,7 +155,7 @@ def run_replay_worker(job_dir: Path, run_dir: Path, interval_s: float) -> int:
             "deposition_point_count": stats.deposition_point_count,
             "duration_s": duration_s,
             "size_bytes": size_bytes,
-            "inputs": input_signature(job_dir),
+            "inputs": starting_signature,
         }
         write_json_atomic(run_dir / REPLAY_MANIFEST, manifest)
         _status(

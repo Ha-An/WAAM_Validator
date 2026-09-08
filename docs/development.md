@@ -65,9 +65,10 @@ sample job 입력 smoke check를 수행합니다. 아래 pytest 명령은 로컬
 .\.venv\Scripts\pytest.exe -q -m "not performance"
 ```
 
-`pyproject.toml`의 기본 pytest 옵션도 performance test를 제외합니다. 로컬 테스트
-suite는 config/CSV, 보간, schedule, 충돌 geometry와 event, layer/shape,
-UI data/preview/runner 및 single-job UI 연결을 검증합니다.
+`pyproject.toml`의 기본 pytest 옵션도 performance test를 제외합니다. 공개 저장소에는
+대용량 fixture를 포함하지 않으므로, 로컬 suite의 보유 범위와 실제 수집된 테스트 수를
+`pytest --collect-only -q`로 먼저 확인하십시오. 최소 suite는 XY Reach와 결과 기록
+원자성, 입력 hash, 로봇 ID 시각화, 충돌 시간축 및 주요 UI 회귀를 검증합니다.
 
 ### 정적 검사
 
@@ -88,7 +89,7 @@ UI data/preview/runner 및 single-job UI 연결을 검증합니다.
 ```
 
 2026-09-07 현재 Windows Python 3.11 환경의 100,000행 synthetic 측정값은 peak RSS
-`178.64 MiB`, full pipeline `2.61초`, Capsule batch 100,000건 `0.0339초`였습니다.
+약 `180 MiB`, full pipeline 약 `2.7초`, Capsule batch 100,000건 약 `0.034초`였습니다.
 이는 절대 성능 보장이 아니라 회귀 비교 기준이며, 장비와 백그라운드 부하에 따라 달라집니다.
 
 런타임은 Matplotlib, NetworkX, SciPy에 의존하지 않습니다. Target normal/body 연결은

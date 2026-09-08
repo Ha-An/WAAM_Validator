@@ -165,7 +165,8 @@ def _scene(
 ) -> tuple[go.Figure, list[str], int, dict[int, int]]:
     vertices, faces, warnings = _preview_mesh(mesh)
     figure = go.Figure()
-    bases = np.asarray([robot.base_xyz_mm for robot in config.robots], dtype=np.float64)
+    robots_by_id = tuple(config.robot(robot_id) for robot_id in (1, 2, 3))
+    bases = np.asarray([robot.base_xyz_mm for robot in robots_by_id], dtype=np.float64)
     scene_z_min = min(
         float(vertices[:, 2].min()),
         float(bases[:, 2].min()),
@@ -176,7 +177,7 @@ def _scene(
         float(bases[:, 2].max()),
         *(
             float(robot.home_xyz_mm[2])
-            for robot in config.robots
+            for robot in robots_by_id
             if robot.home_xyz_mm is not None
         ),
         *(float(trajectory.xyz_mm[:, 2].max()) for trajectory in trajectories.robots),
@@ -269,20 +270,20 @@ def _scene(
         selected = _bounded_interval_indices(trajectory.mode, max_intervals)
         points_shown[robot.id] = min(TRAJECTORY_POINT_LIMIT_PER_ROBOT, int(len(selected) * 3))
         for mode_value in (int(MODE_D), int(MODE_T), int(MODE_W)):
-            x: list[float | None] = []
-            y: list[float | None] = []
-            z: list[float | None] = []
-            for index in selected[trajectory.mode[selected] == mode_value]:
-                segment = trajectory.xyz_mm[index : index + 2]
-                x.extend([float(segment[0, 0]), float(segment[1, 0]), None])
-                y.extend([float(segment[0, 1]), float(segment[1, 1]), None])
-                z.extend([float(segment[0, 2]), float(segment[1, 2]), None])
-            if x:
+            indices = selected[trajectory.mode[selected] == mode_value]
+            if len(indices):
+                # Plotly recursively validates Python lists element by element.
+                # A dense numeric array is both bounded and substantially more
+                # stable when users inspect several large jobs in one UI process.
+                coordinates = np.full((len(indices), 3, 3), np.nan, dtype=np.float64)
+                coordinates[:, 0] = trajectory.xyz_mm[indices]
+                coordinates[:, 1] = trajectory.xyz_mm[indices + 1]
+                flattened = coordinates.reshape((-1, 3))
                 figure.add_trace(
                     go.Scatter3d(
-                        x=x,
-                        y=y,
-                        z=z,
+                        x=flattened[:, 0],
+                        y=flattened[:, 1],
+                        z=flattened[:, 2],
                         mode="lines+markers" if mode_value == int(MODE_W) else "lines",
                         name=f"R{robot.id} {_MODE_LABELS[mode_value]}",
                         line={
@@ -398,7 +399,7 @@ def _statistics_figures(
         x=reach_percentages,
         y=labels,
         orientation="h",
-        marker_color=["#22c55e" if value <= 100.0 else "#ef4444" for value in reach_percentages],
+        marker_color=["#22c55e" if item.passed else "#ef4444" for item in reach.robots],
         text=[f"{value:.1f}%" for value in reach_percentages],
         textposition="inside",
         customdata=[

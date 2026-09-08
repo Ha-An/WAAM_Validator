@@ -42,7 +42,12 @@ def run_deposited_stl_worker(job_dir: Path, run_dir: Path) -> int:
             message="적층 경로를 불러오는 중입니다.",
             progress=0.0,
         )
-        unchanged, message = verify_validation_inputs(job_dir, run_dir)
+        starting_signature = input_signature(job_dir)
+        unchanged, message = verify_validation_inputs(
+            job_dir,
+            run_dir,
+            current_signature=starting_signature,
+        )
         if not unchanged:
             raise ValueError(message)
         config = load_config(job_dir / "config.yaml")
@@ -71,6 +76,10 @@ def run_deposited_stl_worker(job_dir: Path, run_dir: Path) -> int:
             progress=0.92,
         )
         export_deposited_stl(layers, config, temporary)
+        if input_signature(job_dir) != starting_signature:
+            raise ValueError(
+                "적층 STL 생성 중 입력 파일이 변경되었습니다. Validation을 다시 실행하세요."
+            )
         os.replace(temporary, run_dir / "deposited.stl")
         duration_s = time.monotonic() - started
         size_bytes = (run_dir / "deposited.stl").stat().st_size
@@ -81,7 +90,7 @@ def run_deposited_stl_worker(job_dir: Path, run_dir: Path) -> int:
             "duration_s": duration_s,
             "size_bytes": size_bytes,
             "layer_count": len(layers),
-            "inputs": input_signature(job_dir),
+            "inputs": starting_signature,
         }
         write_json_atomic(run_dir / DEPOSITED_STL_MANIFEST, manifest)
         _status(

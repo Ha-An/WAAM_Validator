@@ -54,7 +54,9 @@ FAIL은 예외를 발생시키지 않고 `ValidationResult(status="FAIL")`을 �
 | `unit` | `simulation_s`, `intervals`, `layers` 등 |
 
 Callback은 계산 thread/process에서 동기적으로 호출되므로 오래 걸리는 작업을 넣지
-마십시오. 필요한 상태만 queue 또는 작은 파일로 전달하는 방식이 적합합니다.
+마십시오. 필요한 상태만 queue 또는 작은 파일로 전달하는 방식이 적합합니다. Callback
+자체에서 예외가 발생하면 Validator는 첫 예외를 `run.log`에 기록한 뒤 해당 callback만
+비활성화하고 Validation 계산과 결과 기록은 계속합니다.
 
 ## 단계별 API
 
@@ -133,6 +135,10 @@ Trajectory는 대형 CSV의 메모리 사용량을 줄이기 위해 다음 dtype
 주요 결과 객체는 typed `slots=True` dataclass입니다. `ValidationResult`에는 schedule,
 reach, collision, shape, layer metrics, warning/violation과 Failure Reasons가 포함됩니다.
 `summary_dict()`는 `summary.json`과 같은 직렬화 구조를 반환합니다.
+
+Validation 당시 Config는 `validation_inputs.json`에 입력 파일 SHA-256 지문과 함께
+snapshot으로 기록됩니다. UI는 이후 원본 `config.yaml`이 바뀌더라도 완료된 결과의
+임계값과 충돌 장면을 이 snapshot 기준으로 표시합니다.
 
 `run_validation()`은 정적 PNG, `deposited.stl`, `replay.html`을 만들지 않습니다.
 추가 산출물은 UI worker의 입력 지문 확인과 atomic rename 절차를 통해 생성됩니다.

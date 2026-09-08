@@ -177,19 +177,19 @@ robots:
     home_xyz_mm: [-1000.0, 0.0, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    xy_reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 1500.0
   - id: 2
     base_xyz_mm: [700.0, -1212.435565, 0.0]
     home_xyz_mm: [500.0, -866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    xy_reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 1500.0
   - id: 3
     base_xyz_mm: [700.0, 1212.435565, 0.0]
     home_xyz_mm: [500.0, 866.025404, 1000.0]
     tcp_radius_mm: 100.0
     arm_envelope_radius_mm: 100.0
-    xy_reach_radius_mm: 2000.0
+    xy_reach_radius_mm: 1500.0
 process:
   deposition_speed_mm_s: 8.0
   travel_speed_mm_s: 150.0

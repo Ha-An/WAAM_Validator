@@ -66,7 +66,14 @@ def run(
         typer.echo(render_error_block(wrapped, job_dir.expanduser().resolve()), err=True)
         raise typer.Exit(wrapped.exit_code) from None
     if json_output:
-        typer.echo(json.dumps(result.summary_dict(), ensure_ascii=False, separators=(",", ":")))
+        typer.echo(
+            json.dumps(
+                result.summary_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
     else:
         typer.echo(render_console_summary(result))
     raise typer.Exit(0 if result.status == "PASS" else 1)

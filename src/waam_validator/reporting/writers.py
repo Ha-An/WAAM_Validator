@@ -5,6 +5,10 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
+import shutil
+import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +27,16 @@ CORE_RESULT_FILES = (
     "run.log",
     "validation_inputs.json",
 )
+_RUN_HANDLER_NAME = "waam-validator-run-file"
+
+
+@dataclass(slots=True)
+class RunLogContext:
+    """Logger state that must be restored after a library API call."""
+
+    handler: logging.Handler
+    previous_level: int
+    previous_propagate: bool
 
 
 def prepare_output_directory(input_dir: Path, output_dir: Path | None) -> Path:
@@ -53,17 +67,37 @@ def prepare_output_directory(input_dir: Path, output_dir: Path | None) -> Path:
         raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
 
 
-def configure_file_logging(output_dir: Path) -> None:
+def configure_file_logging(output_dir: Path) -> RunLogContext:
     """Configure the package logger to write a run-local file."""
     logger = logging.getLogger("waam_validator")
+    previous_level = logger.level
+    previous_propagate = logger.propagate
     logger.setLevel(logging.INFO)
     for handler in list(logger.handlers):
-        handler.close()
-        logger.removeHandler(handler)
-    handler = logging.FileHandler(output_dir / "run.log", encoding="utf-8")
+        if handler.get_name() == _RUN_HANDLER_NAME:
+            handler.close()
+            logger.removeHandler(handler)
+    try:
+        handler = logging.FileHandler(output_dir / "run.log", encoding="utf-8")
+    except OSError as exc:
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+        raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
     handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    handler.set_name(_RUN_HANDLER_NAME)
     logger.addHandler(handler)
     logger.propagate = False
+    return RunLogContext(handler, previous_level, previous_propagate)
+
+
+def close_file_logging(context: RunLogContext) -> None:
+    """Detach and close one run-local handler without touching consumer handlers."""
+    logger = logging.getLogger("waam_validator")
+    logger.removeHandler(context.handler)
+    context.handler.flush()
+    context.handler.close()
+    logger.setLevel(context.previous_level)
+    logger.propagate = context.previous_propagate
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
@@ -80,21 +114,28 @@ def _optional(value: float | None) -> str | float:
     return "" if value is None else value
 
 
-def write_result_files(result: ValidationResult) -> None:
-    """Write the fixed, compact core result bundle."""
+def write_result_files(
+    result: ValidationResult,
+) -> None:
+    """Write a complete result bundle and publish ``summary.json`` last."""
     output = result.output_dir
+    bundle = Path(tempfile.mkdtemp(prefix=".result-bundle-", dir=output))
     try:
         write_validation_input_manifest(
             result.input_dir,
-            result.output_dir,
+            bundle,
             result.input_signature,
+            result.config_snapshot,
         )
-        (output / "summary.json").write_text(
-            json.dumps(result.summary_dict(), ensure_ascii=False, indent=2) + "\n",
+        (bundle / "summary.json").write_text(
+            json.dumps(
+                result.summary_dict(), ensure_ascii=False, indent=2, allow_nan=False
+            )
+            + "\n",
             encoding="utf-8",
         )
         _write_csv(
-            output / "collision_events.csv",
+            bundle / "collision_events.csv",
             [
                 "event_id",
                 "type",
@@ -138,7 +179,7 @@ def write_result_files(result: ValidationResult) -> None:
             ],
         )
         _write_csv(
-            output / "robot_metrics.csv",
+            bundle / "robot_metrics.csv",
             [
                 "robot_id",
                 "completion_s",
@@ -155,6 +196,8 @@ def write_result_files(result: ValidationResult) -> None:
                 "minimum_xy_margin_mm",
                 "xy_utilization_ratio",
                 "xy_violation_point_count",
+                "first_xy_violation_s",
+                "last_xy_violation_s",
             ],
             [
                 {
@@ -175,12 +218,14 @@ def write_result_files(result: ValidationResult) -> None:
                     "minimum_xy_margin_mm": reach.minimum_xy_margin_mm,
                     "xy_utilization_ratio": reach.xy_utilization_ratio,
                     "xy_violation_point_count": reach.xy_violation_point_count,
+                    "first_xy_violation_s": _optional(reach.first_xy_violation_s),
+                    "last_xy_violation_s": _optional(reach.last_xy_violation_s),
                 }
                 for item, reach in zip(result.schedule.robots, result.reach.robots, strict=True)
             ],
         )
         _write_csv(
-            output / "layer_metrics.csv",
+            bundle / "layer_metrics.csv",
             [
                 "layer_index",
                 "z_bottom_mm",
@@ -217,11 +262,26 @@ def write_result_files(result: ValidationResult) -> None:
                 for item in result.layer_metrics
             ],
         )
-        (output / "validation_report.md").write_text(_render_markdown(result), encoding="utf-8")
+        (bundle / "validation_report.md").write_text(
+            _render_markdown(result), encoding="utf-8"
+        )
+        # A summary is the completed-run marker. Publishing it last prevents a
+        # partially written bundle from being mistaken for a valid PASS/FAIL.
+        for filename in (
+            "validation_inputs.json",
+            "collision_events.csv",
+            "robot_metrics.csv",
+            "layer_metrics.csv",
+            "validation_report.md",
+            "summary.json",
+        ):
+            os.replace(bundle / filename, output / filename)
     except OutputWriteError:
         raise
     except OSError as exc:
         raise OutputWriteError("OUTPUT_WRITE_FAILED", str(exc)) from exc
+    finally:
+        shutil.rmtree(bundle, ignore_errors=True)
 
 
 def _render_markdown(result: ValidationResult) -> str:
@@ -329,9 +389,17 @@ def write_error_json(output_dir: Path, error: WaamValidatorError, input_dir: Pat
     }
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "error.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        target = output_dir / "error.json"
+        temporary = output_dir / ".error.json.tmp"
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
         )
+        os.replace(temporary, target)
+        # ERROR is the only terminal marker after a fatal failure. If an older
+        # summary was created before the exception, keep it from misleading
+        # non-UI consumers as well.
+        (output_dir / "summary.json").unlink(missing_ok=True)
     except OSError:
         return
 

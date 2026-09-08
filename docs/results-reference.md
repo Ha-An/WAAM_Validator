@@ -25,7 +25,7 @@ WAAM Validator 1.0.0의 현재 결과 schema는 `4.0`입니다. 기본 Validatio
 | `collision_events.csv` | 병합된 Arm Envelope/TCP Radius 이벤트 |
 | `layer_metrics.csv` | 평가 layer별 면적과 형상 지표 |
 | `run.log` | 입력, 계산 단계와 판정 로그 |
-| `validation_inputs.json` | 세 입력 파일의 크기와 nanosecond 수정 시각 |
+| `validation_inputs.json` | 세 입력 파일의 SHA-256, 크기, nanosecond 수정 시각과 Validation 당시 Config |
 
 `warnings.csv`, 정적 PNG, 기본 `deposited.stl`, 기본 `replay.html`은 생성하지 않습니다.
 
@@ -58,15 +58,6 @@ WAAM Validator 1.0.0의 현재 결과 schema는 `4.0`입니다. 기본 Validatio
 
 상태별 시간과 완료 후 비활성 시간은 `robot_metrics.csv`에 저장합니다.
 
-### `shape`
-
-`target_volume_mm3`, `deposited_volume_mm3`, `intersection_volume_mm3`,
-`underfill_volume_mm3`, `overfill_volume_mm3`는 Layer 단면적을 명목 Layer 높이로
-적분한 체적입니다. Coverage·Underfill·Overfill·IoU는 이 체적 합계에서 계산하므로
-Layer 크기가 서로 달라도 면적 가중이 유지됩니다. 원본 mesh 체적은
-`target_mesh_volume_mm3`, 두 Target 체적의 상대 차이는
-`target_volume_discrepancy_ratio`로 별도 기록합니다.
-
 ### `reach`
 
 `reach.distance_basis`는 항상 `"XY"`이며, `reach.passed`와 로봇별 다음 값을 제공합니다.
@@ -95,6 +86,13 @@ TCP의 XY 위치를 저장합니다. `tcp_radius`는 TCP 끝점 사이 XY 거리
 `event_count`는 유형별 행 수와 같습니다.
 
 ### `shape`
+
+`target_volume_mm3`, `deposited_volume_mm3`, `intersection_volume_mm3`,
+`underfill_volume_mm3`, `overfill_volume_mm3`는 Layer 단면적을 명목 Layer 높이로
+적분한 체적입니다. Coverage·Underfill·Overfill·IoU는 이 체적 합계에서 계산하므로
+Layer 크기가 서로 달라도 면적 가중이 유지됩니다. 원본 mesh 체적은
+`target_mesh_volume_mm3`, 두 Target 체적의 상대 차이는
+`target_volume_discrepancy_ratio`로 별도 기록합니다.
 
 - `coverage = intersection volume / target layer volume`
 - `underfill_ratio = underfill volume / target layer volume`
@@ -137,6 +135,7 @@ XY Reach, Arm Envelope, TCP Radius, 형상, 속도입니다.
 - `mean_deposition_speed_mm_s`, `mean_travel_speed_mm_s`
 - `xy_reach_radius_mm`, `maximum_xy_distance_mm`, `minimum_xy_margin_mm`
 - `xy_utilization_ratio`, `xy_violation_point_count`
+- `first_xy_violation_s`, `last_xy_violation_s`
 
 항상 다음 관계를 만족해야 합니다.
 
@@ -194,7 +193,7 @@ UI의 `산출물` 탭에서 다음 파일을 한 번에 하나씩 생성할 수 
 | `deposited.stl` | layer union polygon을 명목 layer 높이로 extrusion한 형상 |
 | `replay.html` | Target·trajectory 3D 장면과 실제 축척 XY Capsule top view |
 
-생성 전 `validation_inputs.json`과 현재 세 입력의 지문을 비교합니다. 다르면 생성을
+생성 전 `validation_inputs.json`과 현재 세 입력의 SHA-256 기반 지문을 비교합니다. 다르면 생성을
 차단하고 Validation 재실행을 요구합니다. worker는 임시 파일을 완성한 뒤 최종 이름으로
 atomic rename합니다. 기존 파일이 있으면 명시적인 `다시 생성` 버튼으로 교체할 수
 있습니다.

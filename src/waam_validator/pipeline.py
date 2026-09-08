@@ -19,6 +19,7 @@ from .models import CollisionSimulationResult, ReachMetrics, ShapeMetrics, Valid
 from .progress import ProgressCallback, ValidationProgress
 from .provenance import input_signature
 from .reporting.writers import (
+    close_file_logging,
     configure_file_logging,
     prepare_output_directory,
     write_error_json,
@@ -73,6 +74,28 @@ def _report_progress(
                 unit=unit,
             )
         )
+
+
+def _guard_progress_callback(callback: ProgressCallback | None) -> ProgressCallback | None:
+    """Disable a broken observer after one warning without changing validation."""
+    if callback is None:
+        return None
+    failed = False
+
+    def guarded(event: ValidationProgress) -> None:
+        nonlocal failed
+        if failed:
+            return
+        try:
+            callback(event)
+        except Exception:
+            failed = True
+            LOGGER.warning(
+                "Progress callback failed; remaining progress events are disabled",
+                exc_info=True,
+            )
+
+    return guarded
 
 
 def _resolve_input(input_dir: Path) -> tuple[Path, Path, Path, Path]:
@@ -156,7 +179,13 @@ def run_validation(
             "MISSING_CONFIG", f"Input directory does not exist: {resolved_input}"
         )
     run_output = prepare_output_directory(resolved_input, output_dir)
-    configure_file_logging(run_output)
+    progress_callback = _guard_progress_callback(progress_callback)
+    try:
+        log_handler = configure_file_logging(run_output)
+    except WaamValidatorError as exc:
+        exc.output_dir = run_output
+        write_error_json(run_output, exc, resolved_input)
+        raise
     try:
         LOGGER.info("WAAM Validator version %s", __version__)
         _report_progress(progress_callback, "loading_inputs", "입력 파일을 읽고 있습니다.")
@@ -369,6 +398,7 @@ def run_validation(
                 "arm_envelope": config.collision.check_arm_envelope,
                 "tcp_radius": config.collision.check_tcp_radius,
             },
+            config_snapshot=config.model_dump(mode="json"),
         )
 
         _report_progress(progress_callback, "results", "결과 파일을 기록 중입니다.")
@@ -391,6 +421,8 @@ def run_validation(
         wrapped = ComputationError("INTERNAL_CALCULATION_ERROR", str(exc), output_dir=run_output)
         write_error_json(run_output, wrapped, resolved_input)
         raise wrapped from exc
+    finally:
+        close_file_logging(log_handler)
 
 
 def check_input(input_dir: Path) -> tuple[int, bool, int]:

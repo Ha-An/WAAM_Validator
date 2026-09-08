@@ -89,7 +89,7 @@ Z 좌표는 Reach 계산에 사용하지 않습니다.
 | `collision_events.csv` | 충돌 종류·pair·시간·거리·안전 여유 |
 | `layer_metrics.csv` | layer별 면적과 형상 지표 |
 | `run.log` | 실행 단계와 계산 요약 |
-| `validation_inputs.json` | 결과에 사용된 세 입력 파일의 지문 |
+| `validation_inputs.json` | 세 입력 파일의 SHA-256 지문과 Validation 당시 Config |
 
 정적 PNG는 만들지 않습니다. `deposited.stl`과 self-contained `replay.html`은
 Validation 결과 화면에서 예상 시간·용량을 확인한 뒤 필요한 것만 생성합니다. 생성
