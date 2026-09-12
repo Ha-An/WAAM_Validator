@@ -1,4 +1,4 @@
-# WAAM Validator (v1.0.0)
+# WAAM Validator (v1.0.1)
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
@@ -14,8 +14,15 @@ WAAM Validator는 세 대 로봇의 WAAM(DED) 작업 계획을 실행 전에 검
 - Base–TCP 중심선을 폭이 있는 Capsule로 본 XY Arm Envelope 충돌과 TCP 반경 침범
 - 명목 비드 형상과 Target STL layer 단면의 Coverage, Underfill, Overfill, IoU
 
-현재 애플리케이션 버전은 `1.0.0`, 결과 JSON schema는 `4.0`입니다. Config 자체에는
+현재 애플리케이션 버전은 `1.0.1`, 결과 JSON schema는 `4.0`입니다. Config 자체에는
 버전 필드가 없습니다.
+
+## v1.0.1 변경 사항
+
+- 기본 셀에서 Robot 2를 `+Y`, Robot 3을 `-Y` 방향에 배치하도록 Robot ID와 좌표의
+  대응 관계를 정리했습니다.
+- 기본 셀의 세 Robot 모두에 XY Reach 반경 `1,500 mm`를 적용했습니다.
+- 결과 JSON schema는 기존 `4.0`을 유지합니다.
 
 > 이 도구는 계획 단계의 기하 검증기입니다. 실제 관절·링크 자세, Z 방향 로봇 간
 > 회피, 지그·환경물, 열·용융풀·응력, 장비 운전 안전은 모델링하지 않습니다.

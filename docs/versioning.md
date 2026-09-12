@@ -2,7 +2,7 @@
 
 ## 현재 버전
 
-현재 WAAM Validator 애플리케이션 버전은 **1.0.0**입니다. 버전의 단일 원본은
+현재 WAAM Validator 애플리케이션 버전은 **1.0.1**입니다. 버전의 단일 원본은
 [`src/waam_validator/_version.py`](../src/waam_validator/_version.py)이며 다음 위치가
 이 값을 공유합니다.
 
