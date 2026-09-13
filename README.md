@@ -17,15 +17,15 @@ WAAM Validator는 세 대 로봇의 WAAM(DED) 작업 계획을 실행 전에 검
 현재 애플리케이션 버전은 `1.0.1`, 결과 JSON schema는 `4.0`입니다. Config 자체에는
 버전 필드가 없습니다.
 
+> 이 도구는 계획 단계의 기하 검증기입니다. 실제 관절·링크 자세, Z 방향 로봇 간
+> 회피, 지그·환경물, 열·용융풀·응력, 장비 운전 안전은 모델링하지 않습니다.
+
 ## v1.0.1 변경 사항
 
 - 기본 셀에서 Robot 2를 `+Y`, Robot 3을 `-Y` 방향에 배치하도록 Robot ID와 좌표의
   대응 관계를 정리했습니다.
 - 기본 셀의 세 Robot 모두에 XY Reach 반경 `1,500 mm`를 적용했습니다.
 - 결과 JSON schema는 기존 `4.0`을 유지합니다.
-
-> 이 도구는 계획 단계의 기하 검증기입니다. 실제 관절·링크 자세, Z 방향 로봇 간
-> 회피, 지그·환경물, 열·용융풀·응력, 장비 운전 안전은 모델링하지 않습니다.
 
 ## 빠른 시작
 
@@ -62,6 +62,29 @@ waam-validator ui .\my_job
 UI는 `입력 준비 → Validation 진행 → 결과` 순서로 한 작업을 끝까지 처리합니다.
 브라우저는 기본적으로 `http://127.0.0.1:8050`에서 열립니다.
 
+## 애플리케이션 화면
+
+입력 폴더를 확인하면 세 파일의 상태와 사전검사 결과가 나타납니다. 이어서 Target,
+Robot Base·Home, XY Reach와 전체 trajectory를 한 좌표계에서 확인할 수 있습니다.
+
+![입력 확인이 완료된 WAAM Validator 입력 준비 화면](docs/assets/ui-input-ready.png)
+
+![Target STL, 로봇 배치, XY Reach와 trajectory를 함께 표시한 3D 작업 공간](docs/assets/ui-workspace-preview.png)
+
+로봇별 Gantt는 Deposition·Travel·Wait·완료 후 비활성을 실제 시간축에 표시합니다.
+같은 입력에서 상태 시간 비율, 경로 길이와 XY Reach 사용률도 함께 확인합니다.
+
+| 로봇 작업 일정 | Trajectory 통계 |
+| --- | --- |
+| ![로봇별 작업 상태 Gantt](docs/assets/ui-schedule-gantt.png) | ![로봇별 시간, 거리와 XY Reach 통계](docs/assets/ui-trajectory-statistics.png) |
+
+Validation이 끝나면 최종 상태와 검사별 PASS/FAIL, 경고·실패 원인 및 세부 결과를
+한 화면에서 확인할 수 있습니다.
+
+| PASS 결과 | FAIL 결과와 실패 원인 |
+| --- | --- |
+| ![모든 핵심 검사가 통과된 Validation 결과](docs/assets/ui-validation-pass.png) | ![XY Reach, 충돌과 형상 검사가 실패한 Validation 결과](docs/assets/ui-validation-result.png) |
+
 ## 입력 핵심 규칙
 
 Trajectory 헤더는 정확히 아래와 같아야 합니다.
@@ -83,6 +106,26 @@ Z 좌표는 Reach 계산에 사용하지 않습니다.
 
 정확한 생성 계약은 [입력물 인터페이스](docs/WAAM_Validator_입력물_인터페이스.md),
 모든 설정값은 [Config 참조](docs/config-reference.md)를 확인하십시오.
+
+## 공개 테스트 모델
+
+저장소의 `tests/01–06`에는 서로 다른 경로·레이어·형상 특성을 가진 공개 검토용
+`config.yaml`과 `target.stl`이 포함됩니다. 아래 치수는 각 STL의 World XYZ 축에
+정렬된 bounding box 크기이며 단위는 mm입니다.
+
+![WAAM Validator 공개 테스트 모델 6종](docs/assets/public-test-models.png)
+
+| 폴더 | 형상 | X × Y × Z [mm] |
+| --- | --- | ---: |
+| `tests/01` | Honeycomb 구조 | 226.238 × 217.983 × 12 |
+| `tests/02` | Spiral 구조 | 351.385 × 324.791 × 16 |
+| `tests/03` | Triangular truss | 358 × 303 × 12 |
+| `tests/04` | Motor inner | 457.959 × 457.959 × 100 |
+| `tests/05` | Twisted triangular shell | 765.698 × 800 × 700 |
+| `tests/06` | Angle frame bracket | 126 × 190 × 102 |
+
+이 모델들은 형상 다양성에 대한 입력·전처리·검증 동작을 확인하기 위한 예제입니다.
+특정 장비에서의 실제 제작 가능성이나 공정 품질을 보증하는 인증 데이터는 아닙니다.
 
 ## 결과
 
